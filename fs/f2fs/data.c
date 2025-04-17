@@ -956,12 +956,12 @@ void f2fs_submit_page_write(struct f2fs_io_info *fio)
 	f2fs_down_write(&io->io_rwsem);
 next:
 #ifdef CONFIG_BLK_DEV_ZONED
-	if (f2fs_sb_has_blkzoned(sbi) && btype < META && io->zone_pending_bio) {
-		wait_for_completion_io(&io->zone_wait);
-		bio_put(io->zone_pending_bio);
-		io->zone_pending_bio = NULL;
-		io->bi_private = NULL;
-	}
+	// if (f2fs_sb_has_blkzoned(sbi) && btype < META && io->zone_pending_bio) {
+	// 	wait_for_completion_io(&io->zone_wait);
+	// 	bio_put(io->zone_pending_bio);
+	// 	io->zone_pending_bio = NULL;
+	// 	io->bi_private = NULL;
+	// }
 #endif
 
 	if (fio->in_list) {
@@ -1019,12 +1019,12 @@ alloc_new:
 #ifdef CONFIG_BLK_DEV_ZONED
 	if (f2fs_sb_has_blkzoned(sbi) && btype < META &&
 			is_end_zone_blkaddr(sbi, fio->new_blkaddr)) {
-		bio_get(io->bio);
-		reinit_completion(&io->zone_wait);
-		io->bi_private = io->bio->bi_private;
-		io->bio->bi_private = io;
-		io->bio->bi_end_io = f2fs_zone_write_end_io;
-		io->zone_pending_bio = io->bio;
+		// bio_get(io->bio);
+		// reinit_completion(&io->zone_wait);
+		// io->bi_private = io->bio->bi_private;
+		// io->bio->bi_private = io;
+		// io->bio->bi_end_io = f2fs_zone_write_end_io;
+		// io->zone_pending_bio = io->bio;
 		__submit_merged_bio(io);
 	}
 #endif
