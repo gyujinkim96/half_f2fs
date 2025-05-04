@@ -2156,7 +2156,7 @@ static void default_options(struct f2fs_sb_info *sbi, bool remount)
 	sbi->sb->s_flags |= SB_LAZYTIME;
 	if (!f2fs_is_readonly(sbi))
 		set_opt(sbi, FLUSH_MERGE);
-	if (f2fs_sb_has_blkzoned(sbi))
+	if (f2fs_sb_has_blkzoned(sbi) || f2fs_sb_has_splitftl(sbi))
 		F2FS_OPTION(sbi).fs_mode = FS_MODE_LFS;
 	else
 		F2FS_OPTION(sbi).fs_mode = FS_MODE_ADAPTIVE;
