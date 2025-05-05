@@ -1211,6 +1211,42 @@ static void __update_discard_tree_range(struct f2fs_sb_info *sbi,
 				struct block_device *bdev, block_t lstart,
 				block_t start, block_t len);
 
+static void __submit_block_reset_cmd(struct f2fs_sb_info *sbi,
+	struct discard_cmd *dc, blk_opf_t flag,
+	struct list_head *wait_list,
+	unsigned int *issued)
+{
+	struct discard_cmd_control *dcc = SM_I(sbi)->dcc_info;
+	struct block_device *bdev = dc->bdev;
+	struct bio *bio = bio_alloc(bdev, 0, REQ_OP_DISCARD | flag, GFP_NOFS);
+	unsigned long flags;
+
+	// trace_f2fs_issue_reset_zone(bdev, dc->di.start);
+
+	spin_lock_irqsave(&dc->lock, flags);
+	dc->state = D_SUBMIT;
+	dc->bio_ref++;
+	spin_unlock_irqrestore(&dc->lock, flags);
+
+	if (issued)
+		(*issued)++;
+
+	atomic_inc(&dcc->queued_discard);
+	dc->queued++;
+	list_move_tail(&dc->list, wait_list);
+
+	/* sanity check on discard range */
+	__check_sit_bitmap(sbi, dc->di.lstart, dc->di.lstart + dc->di.len);
+
+	bio->bi_iter.bi_sector = SECTOR_FROM_BLOCK(dc->di.start);
+	bio->bi_private = dc;
+	bio->bi_end_io = f2fs_submit_discard_endio;
+	submit_bio(bio);
+
+	atomic_inc(&dcc->issued_discard);
+	f2fs_update_iostat(sbi, NULL, FS_DISCARD_IO, dc->di.len * F2FS_BLKSIZE);
+}
+
 #ifdef CONFIG_BLK_DEV_ZONED
 static void __submit_zone_reset_cmd(struct f2fs_sb_info *sbi,
 				   struct discard_cmd *dc, blk_opf_t flag,
@@ -1269,6 +1305,12 @@ static int __submit_discard_cmd(struct f2fs_sb_info *sbi,
 
 	if (is_sbi_flag_set(sbi, SBI_NEED_FSCK))
 		return 0;
+
+	if (f2fs_sb_has_splitftl(sbi)) {
+		__submit_block_reset_cmd(sbi, dc, flag,
+			wait_list, issued);
+		return 0;
+	}
 
 #ifdef CONFIG_BLK_DEV_ZONED
 	if (f2fs_sb_has_blkzoned(sbi) && bdev_is_zoned(bdev)) {
@@ -1535,6 +1577,17 @@ static void __update_discard_tree_range(struct f2fs_sb_info *sbi,
 		node = rb_next(&prev_dc->rb_node);
 		next_dc = rb_entry_safe(node, struct discard_cmd, rb_node);
 	}
+}
+
+static void __queue_block_reset_cmd(struct f2fs_sb_info *sbi,
+	struct block_device *bdev, block_t blkstart, block_t lblkstart,
+	block_t blklen)
+{
+// trace_f2fs_queue_reset_zone(bdev, blkstart);
+
+	mutex_lock(&SM_I(sbi)->dcc_info->cmd_lock);
+	__insert_discard_cmd(sbi, bdev, lblkstart, blkstart, blklen);
+	mutex_unlock(&SM_I(sbi)->dcc_info->cmd_lock);
 }
 
 #ifdef CONFIG_BLK_DEV_ZONED
@@ -1813,6 +1866,19 @@ static void f2fs_wait_discard_bio(struct f2fs_sb_info *sbi, block_t blkaddr)
 
 	mutex_lock(&dcc->cmd_lock);
 	dc = __lookup_discard_cmd(sbi, blkaddr);
+
+	if (dc && f2fs_sb_has_splitftl(sbi)) {
+		if (dc->state == D_PREP) {
+			__submit_block_reset_cmd(sbi, dc, REQ_SYNC,
+							&dcc->wait_list, NULL);
+		}
+		dc->ref++;
+		mutex_unlock(&dcc->cmd_lock);
+		/* wait zone reset */
+		__wait_one_discard_bio(sbi, dc);
+		return;
+	}
+
 #ifdef CONFIG_BLK_DEV_ZONED
 	if (dc && f2fs_sb_has_blkzoned(sbi) && bdev_is_zoned(dc->bdev)) {
 		int devi = f2fs_bdev_index(sbi, dc->bdev);
@@ -1953,6 +2019,31 @@ static int issue_discard_thread(void *data)
 	return 0;
 }
 
+static int __f2fs_issue_discard_blocks(struct f2fs_sb_info *sbi,
+	struct block_device *bdev, block_t blkstart, block_t blklen)
+{
+	sector_t sector, nr_sects;
+	block_t lblkstart = blkstart;
+	int devi = 0;
+	u64 remainder = 0;
+
+	if (f2fs_is_multi_device(sbi)) {
+		devi = f2fs_target_device_index(sbi, blkstart);
+		if (blkstart < FDEV(devi).start_blk ||
+			blkstart > FDEV(devi).end_blk) {
+			f2fs_err(sbi, "Invalid block %x", blkstart);
+			return -EIO;
+		}
+		blkstart -= FDEV(devi).start_blk;
+	}
+
+	sector = SECTOR_FROM_BLOCK(blkstart);
+	nr_sects = SECTOR_FROM_BLOCK(blklen);
+
+	__queue_block_reset_cmd(sbi, bdev, blkstart, lblkstart, blklen);
+	return 0;
+}
+
 #ifdef CONFIG_BLK_DEV_ZONED
 static int __f2fs_issue_discard_zone(struct f2fs_sb_info *sbi,
 		struct block_device *bdev, block_t blkstart, block_t blklen)
@@ -2004,6 +2095,8 @@ static int __f2fs_issue_discard_zone(struct f2fs_sb_info *sbi,
 static int __issue_discard_async(struct f2fs_sb_info *sbi,
 		struct block_device *bdev, block_t blkstart, block_t blklen)
 {
+	if (f2fs_sb_has_splitftl(sbi))
+		return __f2fs_issue_discard_blocks(sbi, bdev, blkstart, blklen);
 #ifdef CONFIG_BLK_DEV_ZONED
 	if (f2fs_sb_has_blkzoned(sbi) && bdev_is_zoned(bdev))
 		return __f2fs_issue_discard_zone(sbi, bdev, blkstart, blklen);
@@ -2230,6 +2323,7 @@ find_next:
 			len = next_pos - cur_pos;
 
 			if (f2fs_sb_has_blkzoned(sbi) ||
+				f2fs_sb_has_splitftl(sbi) || 
 			    (force && len < cpc->trim_minlen))
 				goto skip;
 

@@ -4536,7 +4536,7 @@ static inline int f2fs_bdev_index(struct f2fs_sb_info *sbi,
 
 static inline bool f2fs_hw_should_discard(struct f2fs_sb_info *sbi)
 {
-	return f2fs_sb_has_blkzoned(sbi);
+	return f2fs_sb_has_blkzoned(sbi) || f2fs_sb_has_splitftl(sbi);
 }
 
 static inline bool f2fs_bdev_support_discard(struct block_device *bdev)
@@ -4589,6 +4589,10 @@ static inline bool f2fs_lfs_mode(struct f2fs_sb_info *sbi)
 static inline bool f2fs_valid_pinned_area(struct f2fs_sb_info *sbi,
 					  block_t blkaddr)
 {
+	if (f2fs_sb_has_splitftl(sbi)) {
+		return false;
+	}
+	
 	if (f2fs_sb_has_blkzoned(sbi)) {
 		int devi = f2fs_target_device_index(sbi, blkaddr);
 

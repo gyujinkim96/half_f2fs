@@ -1336,6 +1336,20 @@ default_check:
 		return -EINVAL;
 	}
 #endif
+	if (f2fs_sb_has_splitftl(sbi)) {
+		if (F2FS_OPTION(sbi).discard_unit !=
+				DISCARD_UNIT_SECTION) {
+			f2fs_info(sbi, "splitFTL need section discard, set discard_unit=section by default");
+			F2FS_OPTION(sbi).discard_unit =
+				DISCARD_UNIT_SECTION;
+		}
+
+		if (F2FS_OPTION(sbi).fs_mode != FS_MODE_LFS) {
+			f2fs_info(sbi, "Only lfs mode is allowed with splitFTL block device feature");
+			return -EINVAL;
+		}
+	}
+
 	/*
 	 * The BLKZONED feature indicates that the drive was formatted with
 	 * zone alignment optimization. This is optional for host-aware
@@ -2118,7 +2132,7 @@ static void default_options(struct f2fs_sb_info *sbi, bool remount)
 		if (f2fs_hw_support_discard(sbi) || f2fs_hw_should_discard(sbi))
 			set_opt(sbi, DISCARD);
 
-		if (f2fs_sb_has_blkzoned(sbi))
+		if (f2fs_sb_has_blkzoned(sbi) || f2fs_sb_has_splitftl(sbi))
 			F2FS_OPTION(sbi).discard_unit = DISCARD_UNIT_SECTION;
 		else
 			F2FS_OPTION(sbi).discard_unit = DISCARD_UNIT_BLOCK;

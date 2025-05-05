@@ -185,7 +185,7 @@ static inline bool has_enough_invalid_blocks(struct f2fs_sb_info *sbi)
 
 static inline bool need_to_boost_gc(struct f2fs_sb_info *sbi)
 {
-	if (f2fs_sb_has_blkzoned(sbi))
+	if (f2fs_sb_has_blkzoned(sbi) || f2fs_sb_has_splitftl(sbi))
 		return !has_enough_free_blocks(sbi, LIMIT_BOOST_ZONED_GC);
 	return has_enough_invalid_blocks(sbi);
 }
