@@ -791,6 +791,22 @@ static inline void nvme_setup_flush(struct nvme_ns *ns,
 	cmnd->common.nsid = cpu_to_le32(ns->head->ns_id);
 }
 
+static blk_status_t nvme_setup_block_trim(struct nvme_ns *ns, struct request *req,
+	struct nvme_command *c)
+{
+	u64 lba = nvme_sect_to_lba(ns->head, blk_rq_pos(req));
+	memset(c, 0, sizeof(*c));
+
+	c->common.nsid = cpu_to_le32(ns->head->ns_id);
+	c->common.opcode = nvme_cmd_dsm;
+	c->common.cdw10 = lba & 0xFFFFFFFF;
+	c->common.cdw11 = lba >> 32;
+
+	// printk("check: from nvme trim\n");
+
+	return BLK_STS_OK;
+}
+
 static blk_status_t nvme_setup_discard(struct nvme_ns *ns, struct request *req,
 		struct nvme_command *cmnd)
 {
@@ -1037,6 +1053,9 @@ blk_status_t nvme_setup_cmd(struct nvme_ns *ns, struct request *req)
 		break;
 	case REQ_OP_ZONE_APPEND:
 		ret = nvme_setup_rw(ns, req, cmd, nvme_cmd_zone_append);
+		break;
+	case REQ_OP_BLOCK_RESET:
+		ret = nvme_setup_block_trim(ns, req, cmd);
 		break;
 	default:
 		WARN_ON_ONCE(1);
@@ -3729,6 +3748,8 @@ static void nvme_alloc_ns(struct nvme_ctrl *ctrl, struct nvme_ns_info *info)
 
 	if (nvme_update_ns_info(ns, info))
 		goto out_unlink_ns;
+
+	blk_queue_chunk_sectors(ns->queue, 65536);
 
 	mutex_lock(&ctrl->namespaces_lock);
 	/*

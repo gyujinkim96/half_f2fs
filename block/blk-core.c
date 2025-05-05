@@ -812,6 +812,8 @@ void submit_bio_noacct(struct bio *bio)
 		if (!bdev_is_zoned(bio->bi_bdev) || !blk_queue_zone_resetall(q))
 			goto not_supported;
 		break;
+	case REQ_OP_BLOCK_RESET:
+		break;
 	case REQ_OP_DRV_IN:
 	case REQ_OP_DRV_OUT:
 		/*
