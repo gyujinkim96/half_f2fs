@@ -395,9 +395,9 @@ int f2fs_commit_atomic_write(struct inode *inode)
 
 	f2fs_down_write(&fi->i_gc_rwsem[WRITE]);
 	f2fs_lock_op(sbi);
-
+	
 	err = __f2fs_commit_atomic_write(inode);
-
+	
 	f2fs_unlock_op(sbi);
 	f2fs_up_write(&fi->i_gc_rwsem[WRITE]);
 
@@ -446,6 +446,7 @@ void f2fs_balance_fs(struct f2fs_sb_info *sbi, bool need)
 			.nr_free_secs = 1 };
 		f2fs_down_write(&sbi->gc_lock);
 		stat_inc_gc_call_count(sbi, FOREGROUND);
+		printk("check:  called from %s to f2fs_gc", __func__);
 		f2fs_gc(sbi, &gc_control);
 	}
 }
@@ -1218,7 +1219,7 @@ static void __submit_block_reset_cmd(struct f2fs_sb_info *sbi,
 {
 	struct discard_cmd_control *dcc = SM_I(sbi)->dcc_info;
 	struct block_device *bdev = dc->bdev;
-	struct bio *bio = bio_alloc(bdev, 0, REQ_OP_DISCARD | flag, GFP_NOFS);
+	struct bio *bio = bio_alloc(bdev, 0, REQ_OP_BLOCK_RESET | flag, GFP_NOFS);
 	unsigned long flags;
 
 	// trace_f2fs_issue_reset_zone(bdev, dc->di.start);
@@ -1244,7 +1245,7 @@ static void __submit_block_reset_cmd(struct f2fs_sb_info *sbi,
 	submit_bio(bio);
 
 	atomic_inc(&dcc->issued_discard);
-	f2fs_update_iostat(sbi, NULL, FS_DISCARD_IO, dc->di.len * F2FS_BLKSIZE);
+	// f2fs_update_iostat(sbi, NULL, FS_DISCARD_IO, dc->di.len * F2FS_BLKSIZE);
 }
 
 #ifdef CONFIG_BLK_DEV_ZONED
