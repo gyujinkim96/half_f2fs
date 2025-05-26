@@ -802,8 +802,6 @@ static blk_status_t nvme_setup_block_trim(struct nvme_ns *ns, struct request *re
 	c->common.cdw10 = lba & 0xFFFFFFFF;
 	c->common.cdw11 = lba >> 32;
 
-	// printk("check: from nvme trim\n");
-
 	return BLK_STS_OK;
 }
 
@@ -3749,7 +3747,10 @@ static void nvme_alloc_ns(struct nvme_ctrl *ctrl, struct nvme_ns_info *info)
 	if (nvme_update_ns_info(ns, info))
 		goto out_unlink_ns;
 
-	blk_queue_chunk_sectors(ns->queue, 65536);
+	if (strstr(ctrl->subsys->model, "SPLITFTL")) {
+		printk("updating blk_queue_chunk_sectors for splitftl\n");
+		blk_queue_chunk_sectors(ns->queue, 65536);
+	}
 
 	mutex_lock(&ctrl->namespaces_lock);
 	/*
