@@ -113,6 +113,53 @@ static const enum dd_prio ioprio_class_to_prio[] = {
 	[IOPRIO_CLASS_IDLE]	= DD_IDLE_PRIO,
 };
 
+static inline unsigned int disk_zone_no2(struct gendisk *disk, sector_t sector)
+{
+
+	return sector >> ilog2(65536);
+}
+
+
+static inline unsigned int blk_rq_zone_no2(struct request *rq)
+{
+	return disk_zone_no2(rq->q->disk, blk_rq_pos(rq));
+}	
+
+
+
+static void allocate_zone_write_lock_if_null(struct request *rq) {
+	if (!rq->q->disk->seq_zones_wlock) {
+		printk("zone allocated\n");
+		rq->q->disk->seq_zones_wlock = bitmap_zalloc(512,
+							      GFP_NOIO);
+	}
+}
+
+static void __blk_req_zone_write_unlock2(struct request *rq)
+{
+	rq->rq_flags &= ~RQF_ZONE_WRITE_LOCKED;
+	allocate_zone_write_lock_if_null(rq);
+	if (rq->q->disk->seq_zones_wlock)
+	WARN_ON_ONCE(!test_and_clear_bit(blk_rq_zone_no2(rq),
+	rq->q->disk->seq_zones_wlock));
+}
+
+
+ static inline void blk_req_zone_write_unlock2(struct request *rq)
+{
+	if (rq->rq_flags & RQF_ZONE_WRITE_LOCKED)
+		__blk_req_zone_write_unlock2(rq);
+}
+
+static inline bool blk_rq_is_seq_zoned_write2(struct request *rq)
+{
+	return op_needs_zoned_write_locking(req_op(rq));
+}
+
+
+
+
+
 static inline struct rb_root *
 deadline_rb_root(struct dd_per_prio *per_prio, struct request *rq)
 {
@@ -175,8 +222,8 @@ static inline struct request *deadline_from_pos(struct dd_per_prio *per_prio,
 	 * is below that of the most recently dispatched request. Hence, for
 	 * zoned writes, start searching from the start of a zone.
 	 */
-	if (blk_rq_is_seq_zoned_write(rq))
-		pos = round_down(pos, rq->q->limits.chunk_sectors);
+	if (blk_rq_is_seq_zoned_write2(rq))
+		pos = round_down(pos, 65536);
 
 	while (node) {
 		rq = rb_entry_rq(node);
@@ -342,6 +389,21 @@ static struct request *deadline_skip_seq_writes(struct deadline_data *dd,
  * For the specified data direction, return the next request to
  * dispatch using arrival ordered lists.
  */
+
+ static inline bool blk_req_zone_is_write_locked2(struct request *rq)
+{
+	allocate_zone_write_lock_if_null(rq);
+	return rq->q->disk->seq_zones_wlock &&
+		test_bit(blk_rq_zone_no2(rq), rq->q->disk->seq_zones_wlock);
+}
+
+static inline bool blk_req_can_dispatch_to_zone2(struct request *rq)
+{
+	// printk("can dispatch %d\n", !blk_req_zone_is_write_locked2(rq));
+	return !blk_req_zone_is_write_locked2(rq);
+}
+
+
 static struct request *
 deadline_fifo_request(struct deadline_data *dd, struct dd_per_prio *per_prio,
 		      enum dd_data_dir data_dir)
@@ -353,7 +415,7 @@ deadline_fifo_request(struct deadline_data *dd, struct dd_per_prio *per_prio,
 		return NULL;
 
 	rq = rq_entry_fifo(per_prio->fifo_list[data_dir].next);
-	if (data_dir == DD_READ || !blk_queue_is_zoned(rq->q))
+	if (data_dir == DD_READ)
 		return rq;
 
 	/*
@@ -370,7 +432,7 @@ deadline_fifo_request(struct deadline_data *dd, struct dd_per_prio *per_prio,
 		rb_rq = deadline_from_pos(per_prio, data_dir, blk_rq_pos(rq));
 		if (rb_rq && blk_rq_pos(rb_rq) < blk_rq_pos(rq))
 			rq = rb_rq;
-		if (blk_req_can_dispatch_to_zone(rq) &&
+		if (blk_req_can_dispatch_to_zone2(rq) &&
 		    (blk_queue_nonrot(rq->q) ||
 		     !deadline_is_seq_write(dd, rq)))
 			goto out;
@@ -398,7 +460,7 @@ deadline_next_request(struct deadline_data *dd, struct dd_per_prio *per_prio,
 	if (!rq)
 		return NULL;
 
-	if (data_dir == DD_READ || !blk_queue_is_zoned(rq->q))
+	if (data_dir == DD_READ)
 		return rq;
 
 	/*
@@ -410,7 +472,7 @@ deadline_next_request(struct deadline_data *dd, struct dd_per_prio *per_prio,
 	 */
 	spin_lock_irqsave(&dd->zone_lock, flags);
 	while (rq) {
-		if (blk_req_can_dispatch_to_zone(rq))
+		if (blk_req_can_dispatch_to_zone2(rq))
 			break;
 		if (blk_queue_nonrot(rq->q))
 			rq = deadline_latter_request(rq);
@@ -434,6 +496,20 @@ static bool started_after(struct deadline_data *dd, struct request *rq,
 	start_time -= dd->fifo_expire[rq_data_dir(rq)];
 
 	return time_after(start_time, latest_start);
+}
+
+
+
+void __blk_req_zone_write_lock2(struct request *rq) 
+{
+	allocate_zone_write_lock_if_null(rq);
+	if (WARN_ON_ONCE(test_and_set_bit(blk_rq_zone_no2(rq),
+					  rq->q->disk->seq_zones_wlock)))
+		return;
+
+	// printk("zone %d locked\n", blk_rq_zone_no2(rq));
+	WARN_ON_ONCE(rq->rq_flags & RQF_ZONE_WRITE_LOCKED);
+	rq->rq_flags |= RQF_ZONE_WRITE_LOCKED;
 }
 
 /*
@@ -552,7 +628,8 @@ done:
 	/*
 	 * If the request needs its target zone locked, do it.
 	 */
-	blk_req_zone_write_lock(rq);
+	// blk_req_zone_write_lock(rq); 
+	__blk_req_zone_write_lock2(rq);
 	rq->rq_flags |= RQF_STARTED;
 	return rq;
 }
@@ -805,6 +882,8 @@ static bool dd_bio_merge(struct request_queue *q, struct bio *bio,
 /*
  * add rq to rbtree and fifo
  */
+
+
 static void dd_insert_request(struct blk_mq_hw_ctx *hctx, struct request *rq,
 			      blk_insert_t flags, struct list_head *free)
 {
@@ -822,7 +901,7 @@ static void dd_insert_request(struct blk_mq_hw_ctx *hctx, struct request *rq,
 	 * This may be a requeue of a write request that has locked its
 	 * target zone. If it is the case, this releases the zone lock.
 	 */
-	blk_req_zone_write_unlock(rq);
+	blk_req_zone_write_unlock2(rq); 
 
 	prio = ioprio_class_to_prio[ioprio_class];
 	per_prio = &dd->per_prio[prio];
@@ -855,21 +934,25 @@ static void dd_insert_request(struct blk_mq_hw_ctx *hctx, struct request *rq,
 		 */
 		rq->fifo_time = jiffies + dd->fifo_expire[data_dir];
 		insert_before = &per_prio->fifo_list[data_dir];
-#ifdef CONFIG_BLK_DEV_ZONED
+// #ifdef CONFIG_BLK_DEV_ZONED  
 		/*
 		 * Insert zoned writes such that requests are sorted by
 		 * position per zone.
 		 */
-		if (blk_rq_is_seq_zoned_write(rq)) {
+		if (blk_rq_is_seq_zoned_write2(rq)) {
 			struct request *rq2 = deadline_latter_request(rq);
 
-			if (rq2 && blk_rq_zone_no(rq2) == blk_rq_zone_no(rq))
+			if (rq2 && blk_rq_zone_no2(rq2) == blk_rq_zone_no2(rq))
 				insert_before = &rq2->queuelist;
 		}
-#endif
+// #endif
 		list_add_tail(&rq->queuelist, insert_before);
 	}
 }
+
+
+
+
 
 /*
  * Called from blk_mq_insert_request() or blk_mq_dispatch_plug_list().
@@ -947,11 +1030,11 @@ static void dd_finish_request(struct request *rq)
 
 	atomic_inc(&per_prio->stats.completed);
 
-	if (blk_queue_is_zoned(q)) {
+	if (1) {
 		unsigned long flags;
 
 		spin_lock_irqsave(&dd->zone_lock, flags);
-		blk_req_zone_write_unlock(rq);
+		blk_req_zone_write_unlock2(rq); 
 		spin_unlock_irqrestore(&dd->zone_lock, flags);
 
 		if (dd_has_write_work(rq->mq_hctx))
