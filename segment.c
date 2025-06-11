@@ -174,6 +174,9 @@ bool f2fs_need_SSR(struct f2fs_sb_info *sbi)
 	int dent_secs = get_blocktype_secs(sbi, F2FS_DIRTY_DENTS);
 	int imeta_secs = get_blocktype_secs(sbi, F2FS_DIRTY_IMETA);
 
+	if (f2fs_sb_has_splitftl(sbi))
+		return false;
+
 	if (f2fs_lfs_mode(sbi))
 		return false;
 	if (sbi->gc_mode == GC_URGENT_HIGH)
@@ -2287,7 +2290,7 @@ void f2fs_clear_prefree_segments(struct f2fs_sb_info *sbi,
 			continue;
 
 		/* Should cover 2MB zoned device for zone-based reset */
-		if (!f2fs_sb_has_blkzoned(sbi) &&
+		if (!f2fs_sb_has_blkzoned(sbi) && !f2fs_sb_has_splitftl(sbi) &&
 		    (!f2fs_lfs_mode(sbi) || !__is_large_section(sbi))) {
 			f2fs_issue_discard(sbi, START_BLOCK(sbi, start),
 				(end - start) << sbi->log_blocks_per_seg);
@@ -3370,7 +3373,7 @@ int f2fs_trim_fs(struct f2fs_sb_info *sbi, struct fstrim_range *range)
 	struct discard_policy dpolicy;
 	unsigned long long trimmed = 0;
 	int err = 0;
-	bool need_align = f2fs_lfs_mode(sbi) && __is_large_section(sbi);
+	bool need_align = (f2fs_lfs_mode(sbi) && __is_large_section(sbi)) || f2fs_sb_has_splitftl(sbi);
 
 	if (start >= MAX_BLKADDR(sbi) || range->len < sbi->blocksize)
 		return -EINVAL;
@@ -5382,7 +5385,7 @@ int f2fs_build_segment_manager(struct f2fs_sb_info *sbi)
 	if (sm_info->rec_prefree_segments > DEF_MAX_RECLAIM_PREFREE_SEGMENTS)
 		sm_info->rec_prefree_segments = DEF_MAX_RECLAIM_PREFREE_SEGMENTS;
 
-	if (!f2fs_lfs_mode(sbi))
+	if (!f2fs_lfs_mode(sbi) && f2fs_sb_has_splitftl(sbi))
 		sm_info->ipu_policy = BIT(F2FS_IPU_FSYNC);
 	sm_info->min_ipu_util = DEF_MIN_IPU_UTIL;
 	sm_info->min_fsync_blocks = DEF_MIN_FSYNC_BLOCKS;
