@@ -1533,6 +1533,7 @@ int f2fs_map_blocks(struct inode *inode, struct f2fs_map_blocks *map, int flag)
 	unsigned int start_pgofs;
 	int bidx = 0;
 	bool is_hole;
+	bool is_reserved;
 
 	if (!maxblocks)
 		return 0;
@@ -1573,6 +1574,13 @@ next_dnode:
 
 next_block:
 	blkaddr = f2fs_data_blkaddr(&dn);
+
+	is_reserved = is_high2bits_10(blkaddr);
+	if (is_reserved) {
+		blkaddr = revert_data_blkaddr(blkaddr);
+		f2fs_set_data_blkaddr(&dn, blkaddr);
+	}
+
 	is_hole = !__is_valid_data_blkaddr(blkaddr);
 	if (!is_hole &&
 	    !f2fs_is_valid_blkaddr(sbi, blkaddr, DATA_GENERIC_ENHANCE)) {
@@ -1583,7 +1591,7 @@ next_block:
 
 	/* use out-place-update for direct IO under LFS mode */
 	if (map->m_may_create &&
-	    (is_hole || (f2fs_lfs_mode(sbi) && flag == F2FS_GET_BLOCK_DIO))) {
+	    (is_hole || (f2fs_lfs_mode(sbi) && flag == F2FS_GET_BLOCK_DIO && !(f2fs_sb_has_splitftl(sbi) && is_reserved)))) {
 		if (unlikely(f2fs_cp_error(sbi))) {
 			err = -EIO;
 			goto sync_out;
@@ -1670,6 +1678,10 @@ next_block:
 		ofs++;
 		map->m_len++;
 	} else {
+		if (f2fs_sb_has_splitftl(sbi)) {
+			f2fs_set_data_blkaddr(&dn, reserve_data_blkaddr(blkaddr));
+		}
+
 		goto sync_out;
 	}
 

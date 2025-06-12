@@ -3503,6 +3503,38 @@ static inline void verify_blkaddr(struct f2fs_sb_info *sbi,
 			 blkaddr, type);
 }
 
+static inline bool is_high2bits_10(block_t blk)
+{
+    // 상위 2비트를 오른쪽으로 30비트 시프트하여 위치 이동
+    u32 high2 = blk >> 30;
+
+    // high2가 2(10 in binary)인지 확인
+    return high2 == 0b10;
+}
+
+static inline block_t reserve_data_blkaddr(block_t blkaddr) {
+	block_t ret = blkaddr;
+
+	BUG_ON(is_high2bits_10(ret));
+
+	ret &= 0x3FFFFFFF;          // 상위 2비트 00으로 초기화 (0011...1111)
+
+	// 2. 상위 2비트를 10으로 설정
+	ret |= 0x80000000;    
+
+	return ret;
+}
+
+static inline block_t revert_data_blkaddr(block_t blkaddr) {
+	block_t ret = blkaddr;
+
+	BUG_ON(!is_high2bits_10(ret));
+
+	ret &= 0x3FFFFFFF;          // 상위 2비트 00으로 초기화 (0011...1111)
+
+	return ret;
+}
+
 static inline bool __is_valid_data_blkaddr(block_t blkaddr)
 {
 	if (blkaddr == NEW_ADDR || blkaddr == NULL_ADDR ||
