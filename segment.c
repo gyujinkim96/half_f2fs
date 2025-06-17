@@ -1240,6 +1240,7 @@ static void __submit_block_reset_cmd(struct f2fs_sb_info *sbi,
 
 	bio->bi_iter.bi_sector = SECTOR_FROM_BLOCK(dc->di.start);
 	bio->bi_private = dc;
+	bio->bi_iter.bi_size = dc->di.len * F2FS_BLKSIZE;
 	bio->bi_end_io = f2fs_submit_discard_endio;
 	submit_bio(bio);
 
