@@ -2096,7 +2096,7 @@ static int __f2fs_issue_discard_zone(struct f2fs_sb_info *sbi,
 static int __issue_discard_async(struct f2fs_sb_info *sbi,
 		struct block_device *bdev, block_t blkstart, block_t blklen)
 {
-	if (f2fs_sb_has_splitftl(sbi))
+	if (f2fs_sb_has_splitftl(sbi) && bdev_is_splitftl(bdev))
 		return __f2fs_issue_discard_blocks(sbi, bdev, blkstart, blklen);
 #ifdef CONFIG_BLK_DEV_ZONED
 	if (f2fs_sb_has_blkzoned(sbi) && bdev_is_zoned(bdev))
