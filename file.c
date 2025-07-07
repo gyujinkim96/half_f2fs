@@ -3326,13 +3326,13 @@ static int f2fs_ioc_set_pin_file(struct file *filp, unsigned long arg)
 		goto done;
 	}
 
-	if (f2fs_sb_has_blkzoned(sbi) && F2FS_HAS_BLOCKS(inode)) {
+	if ((f2fs_sb_has_blkzoned(sbi) || f2fs_sb_has_splitftl(sbi)) && F2FS_HAS_BLOCKS(inode)) {
 		ret = -EFBIG;
 		goto out;
 	}
 
 	/* Let's allow file pinning on zoned device. */
-	if (!f2fs_sb_has_blkzoned(sbi) &&
+	if (!(f2fs_sb_has_blkzoned(sbi) || f2fs_sb_has_splitftl(sbi)) &&
 	    f2fs_should_update_outplace(inode, NULL)) {
 		ret = -EINVAL;
 		goto out;

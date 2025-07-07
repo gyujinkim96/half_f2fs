@@ -2957,9 +2957,53 @@ static inline block_t data_blkaddr(struct inode *inode,
 	return le32_to_cpu(addr_array[base + offset]);
 }
 
+static inline bool is_high2bits_10(block_t blk)
+{
+    // 상위 2비트를 오른쪽으로 30비트 시프트하여 위치 이동
+    u32 high2 = blk >> 30;
+
+    // high2가 2(10 in binary)인지 확인
+    return high2 == 0b10;
+}
+
+static inline block_t reserve_data_blkaddr(block_t blkaddr) {
+	block_t ret = blkaddr;
+
+	BUG_ON(is_high2bits_10(ret));
+
+	ret &= 0x3FFFFFFF;          // 상위 2비트 00으로 초기화 (0011...1111)
+
+	// 2. 상위 2비트를 10으로 설정
+	ret |= 0x80000000;    
+
+	return ret;
+}
+
+static inline block_t revert_data_blkaddr(block_t blkaddr) {
+	block_t ret = blkaddr;
+
+	BUG_ON(!is_high2bits_10(ret));
+
+	ret &= 0x3FFFFFFF;          // 상위 2비트 00으로 초기화 (0011...1111)
+
+	return ret;
+}
+
+static inline bool f2fs_is_blkaddr_reserved(struct dnode_of_data *dn)
+{
+	block_t ret = data_blkaddr(dn->inode, dn->node_page, dn->ofs_in_node);
+	
+	return is_high2bits_10(ret);
+}
+
 static inline block_t f2fs_data_blkaddr(struct dnode_of_data *dn)
 {
-	return data_blkaddr(dn->inode, dn->node_page, dn->ofs_in_node);
+	block_t ret = data_blkaddr(dn->inode, dn->node_page, dn->ofs_in_node);
+
+	if (is_high2bits_10(ret))
+		ret = revert_data_blkaddr(ret);
+
+	return ret;
 }
 
 static inline int f2fs_test_bit(unsigned int nr, char *addr)
@@ -3501,38 +3545,6 @@ static inline void verify_blkaddr(struct f2fs_sb_info *sbi,
 	if (!f2fs_is_valid_blkaddr(sbi, blkaddr, type))
 		f2fs_err(sbi, "invalid blkaddr: %u, type: %d, run fsck to fix.",
 			 blkaddr, type);
-}
-
-static inline bool is_high2bits_10(block_t blk)
-{
-    // 상위 2비트를 오른쪽으로 30비트 시프트하여 위치 이동
-    u32 high2 = blk >> 30;
-
-    // high2가 2(10 in binary)인지 확인
-    return high2 == 0b10;
-}
-
-static inline block_t reserve_data_blkaddr(block_t blkaddr) {
-	block_t ret = blkaddr;
-
-	BUG_ON(is_high2bits_10(ret));
-
-	ret &= 0x3FFFFFFF;          // 상위 2비트 00으로 초기화 (0011...1111)
-
-	// 2. 상위 2비트를 10으로 설정
-	ret |= 0x80000000;    
-
-	return ret;
-}
-
-static inline block_t revert_data_blkaddr(block_t blkaddr) {
-	block_t ret = blkaddr;
-
-	BUG_ON(!is_high2bits_10(ret));
-
-	ret &= 0x3FFFFFFF;          // 상위 2비트 00으로 초기화 (0011...1111)
-
-	return ret;
 }
 
 static inline bool __is_valid_data_blkaddr(block_t blkaddr)
@@ -4622,7 +4634,9 @@ static inline bool f2fs_valid_pinned_area(struct f2fs_sb_info *sbi,
 					  block_t blkaddr)
 {
 	if (f2fs_sb_has_splitftl(sbi)) {
-		return false;
+		int devi = f2fs_target_device_index(sbi, blkaddr);
+
+		return !bdev_is_splitftl(FDEV(devi).bdev);
 	}
 	
 	if (f2fs_sb_has_blkzoned(sbi)) {

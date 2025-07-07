@@ -186,7 +186,10 @@ static ssize_t features_show(struct f2fs_attr *a,
 						"encryption");
 	if (f2fs_sb_has_blkzoned(sbi))
 		len += scnprintf(buf + len, PAGE_SIZE - len, "%s%s",
-				len ? ", " : "", "blkzoned");
+				len ? ", " : "", "blkzoned");	
+	if (f2fs_sb_has_splitftl(sbi))
+		len += scnprintf(buf + len, PAGE_SIZE - len, "%s%s",
+				len ? ", " : "", "splitftl");
 	if (f2fs_sb_has_extra_attr(sbi))
 		len += scnprintf(buf + len, PAGE_SIZE - len, "%s%s",
 				len ? ", " : "", "extra_attr");

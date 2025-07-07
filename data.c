@@ -1575,9 +1575,8 @@ next_dnode:
 next_block:
 	blkaddr = f2fs_data_blkaddr(&dn);
 
-	is_reserved = is_high2bits_10(blkaddr);
+	is_reserved = f2fs_is_blkaddr_reserved(&dn);
 	if (is_reserved) {
-		blkaddr = revert_data_blkaddr(blkaddr);
 		f2fs_set_data_blkaddr(&dn, blkaddr);
 	}
 
@@ -1678,7 +1677,7 @@ next_block:
 		ofs++;
 		map->m_len++;
 	} else {
-		if (f2fs_sb_has_splitftl(sbi)) {
+		if (map->m_may_create && f2fs_sb_has_splitftl(sbi)) {
 			f2fs_set_data_blkaddr(&dn, reserve_data_blkaddr(blkaddr));
 		}
 

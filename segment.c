@@ -1307,9 +1307,14 @@ static int __submit_discard_cmd(struct f2fs_sb_info *sbi,
 	if (is_sbi_flag_set(sbi, SBI_NEED_FSCK))
 		return 0;
 
-	if (f2fs_sb_has_splitftl(sbi)) {
+	if (f2fs_sb_has_splitftl(sbi) && bdev_is_splitftl(bdev)) {
+		int devi = f2fs_bdev_index(sbi, bdev);
+
+		if (devi < 0)
+			return -EINVAL;
+
 		__submit_block_reset_cmd(sbi, dc, flag,
-			wait_list, issued);
+						wait_list, issued);
 		return 0;
 	}
 
@@ -1868,11 +1873,20 @@ static void f2fs_wait_discard_bio(struct f2fs_sb_info *sbi, block_t blkaddr)
 	mutex_lock(&dcc->cmd_lock);
 	dc = __lookup_discard_cmd(sbi, blkaddr);
 
-	if (dc && f2fs_sb_has_splitftl(sbi)) {
-		if (dc->state == D_PREP) {
-			__submit_block_reset_cmd(sbi, dc, REQ_SYNC,
-							&dcc->wait_list, NULL);
+
+
+	if (dc && f2fs_sb_has_splitftl(sbi) && bdev_is_splitftl(dc->bdev)) {
+		int devi = f2fs_bdev_index(sbi, dc->bdev);
+
+		if (devi < 0) {
+			mutex_unlock(&dcc->cmd_lock);
+			return;
 		}
+
+
+		if (dc->state == D_PREP)
+			__submit_block_reset_cmd(sbi, dc, REQ_SYNC,
+						&dcc->wait_list, NULL);
 		dc->ref++;
 		mutex_unlock(&dcc->cmd_lock);
 		/* wait zone reset */
@@ -2287,7 +2301,7 @@ void f2fs_clear_prefree_segments(struct f2fs_sb_info *sbi,
 			continue;
 
 		/* Should cover 2MB zoned device for zone-based reset */
-		if (!f2fs_sb_has_blkzoned(sbi) &&
+		if (!f2fs_sb_has_blkzoned(sbi) && !f2fs_sb_has_splitftl(sbi) &&
 		    (!f2fs_lfs_mode(sbi) || !__is_large_section(sbi))) {
 			f2fs_issue_discard(sbi, START_BLOCK(sbi, start),
 				(end - start) << sbi->log_blocks_per_seg);
@@ -2770,6 +2784,14 @@ static void get_new_segment(struct f2fs_sb_info *sbi,
 			goto got_it;
 	}
 
+	if (f2fs_sb_has_splitftl(sbi)) {
+		if (pinning) 
+			segno = 0;
+		else
+			segno = max(first_splitftl_segno(sbi), *newseg);
+		hint = GET_SEC_FROM_SEG(sbi, segno);
+	}
+
 #ifdef CONFIG_BLK_DEV_ZONED
 	/*
 	 * If we format f2fs on zoned storage, let's try to get pinned sections
@@ -2787,6 +2809,19 @@ static void get_new_segment(struct f2fs_sb_info *sbi,
 
 find_other_zone:
 	secno = find_next_zero_bit(free_i->free_secmap, MAIN_SECS(sbi), hint);
+
+
+// BLKZONE_ALLOC_PRIOR_SEQ
+
+	if (secno >= MAIN_SECS(sbi) && f2fs_sb_has_splitftl(sbi)) {
+		hint = GET_SEC_FROM_SEG(sbi, first_splitftl_segno(sbi));
+		secno = find_next_zero_bit(free_i->free_secmap, MAIN_SECS(sbi), hint);
+
+		if (secno >= MAIN_SECS(sbi)) {
+			ret = -ENOSPC;
+			goto out_unlock;
+		}
+	}
 
 #ifdef CONFIG_BLK_DEV_ZONED
 	if (secno >= MAIN_SECS(sbi) && f2fs_sb_has_blkzoned(sbi)) {
@@ -3248,7 +3283,8 @@ retry:
 	err = f2fs_allocate_new_section(sbi, CURSEG_COLD_DATA_PINNED, false);
 	f2fs_unlock_op(sbi);
 
-	if (f2fs_sb_has_blkzoned(sbi) && err && gc_required) {
+	if ((f2fs_sb_has_blkzoned(sbi) || f2fs_sb_has_splitftl(sbi)) 
+			&& err && gc_required) {
 		f2fs_down_write(&sbi->gc_lock);
 		f2fs_gc_range(sbi, 0, GET_SEGNO(sbi, FDEV(0).end_blk), true, 1);
 		f2fs_up_write(&sbi->gc_lock);
