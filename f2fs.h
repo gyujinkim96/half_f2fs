@@ -1712,7 +1712,10 @@ struct f2fs_sb_info {
 	atomic_t meta_count[META_MAX];		/* # of meta blocks */
 	unsigned int segment_count[2];		/* # of allocated segments */
 	unsigned int block_count[2];		/* # of allocated blocks */
-	atomic_t inplace_count;		/* # of inplace update */
+	atomic_t inplace_count;	/* # of inplace update */
+	atomic_t inplace_in_same_seg_count;	
+
+
 	/* # of lookup extent cache */
 	atomic64_t total_hit_ext[NR_EXTENT_CACHES];
 	/* # of hit rbtree extent node */
@@ -4033,6 +4036,7 @@ struct f2fs_stat_info {
 	unsigned int segment_count[2];
 	unsigned int block_count[2];
 	unsigned int inplace_count;
+	unsigned int inplace_in_same_seg_count;	
 	unsigned long long base_mem, cache_mem, page_mem;
 };
 
@@ -4121,6 +4125,8 @@ static inline struct f2fs_stat_info *F2FS_STAT(struct f2fs_sb_info *sbi)
 		((sbi)->block_count[(curseg)->alloc_type]++)
 #define stat_inc_inplace_blocks(sbi)					\
 		(atomic_inc(&(sbi)->inplace_count))
+#define stat_inc_inplace_in_same_seg_count(sbi)					\
+		(atomic_inc(&(sbi)->inplace_in_same_seg_count))
 #define stat_update_max_atomic_write(inode)				\
 	do {								\
 		int cur = atomic_read(&F2FS_I_SB(inode)->atomic_files);	\

@@ -3821,6 +3821,8 @@ int f2fs_inplace_write_data(struct f2fs_io_info *fio)
 	int err;
 	struct f2fs_sb_info *sbi = fio->sbi;
 	unsigned int segno;
+	bool ipu_in_curseg = false;
+	
 
 	fio->new_blkaddr = fio->old_blkaddr;
 	/* i/o temperature is needed for passing down write hints */
@@ -3836,6 +3838,23 @@ int f2fs_inplace_write_data(struct f2fs_io_info *fio)
 		f2fs_handle_error(sbi, ERROR_INCONSISTENT_SUM_TYPE);
 		goto drop_bio;
 	}
+
+
+	{
+		int i;
+		f2fs_down_read(&SM_I(sbi)->curseg_lock);
+	
+		for (i = 0; i < NR_PERSISTENT_LOG; i++) {
+			ipu_in_curseg |= (segno == CURSEG_I(sbi, i)->segno);
+		}
+
+		f2fs_up_read(&SM_I(sbi)->curseg_lock);
+	}
+
+	if (ipu_in_curseg) {
+		stat_inc_inplace_in_same_seg_count(sbi);
+	}
+
 
 	if (f2fs_cp_error(sbi)) {
 		err = -EIO;
