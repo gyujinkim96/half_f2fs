@@ -224,6 +224,17 @@ static void update_general_status(struct f2fs_sb_info *sbi)
 	}
 
 	si->inplace_count = atomic_read(&sbi->inplace_count);
+
+	__get_secs_required(sbi, &si->lower_secs, &si->upper_secs, &si->curseg_space);
+	si->wait_ms = sbi->wait_ms;
+
+	si->node_secs = get_blocktype_secs(sbi, F2FS_DIRTY_NODES);
+	si->dent_secs = get_blocktype_secs(sbi, F2FS_DIRTY_DENTS);
+	si->imeta_secs = get_blocktype_secs(sbi, F2FS_DIRTY_IMETA);
+	si->all_meta_secs = si->node_secs + si->dent_secs + si->imeta_secs;
+	si->min_ssr_sections = SM_I(sbi)->min_ssr_sections;
+	si->reserved_sections = reserved_sections(sbi);
+	si->ssr_threshold = si->all_meta_secs + si->min_ssr_sections + si->reserved_sections; 
 }
 
 /*
@@ -654,6 +665,14 @@ static int stat_show(struct seq_file *s, void *v)
 				si->ext_mem[EX_BLOCK_AGE] >> 10);
 		seq_printf(s, "  - paged : %llu KB\n",
 				si->page_mem >> 10);
+
+		seq_printf(s, "\nlower_secs: %u, upper_secs: %u, free_secs2: %u, curseg_space: %d\n",
+			si->lower_secs, si->upper_secs, si->free_secs, si->curseg_space);
+		seq_printf(s, "node_secs: %d, dent_secs: %d, imeta_secs: %d, all_meta_secs: %d\n", 
+			si->node_secs, si->dent_secs, si->imeta_secs, si->all_meta_secs);
+		seq_printf(s, "min_ssr_sections: %d, reserved_sections: %d, ssr_threshold: %d\n", 
+			si->min_ssr_sections, si->reserved_sections, si->ssr_threshold);
+		seq_printf(s, "wait_ms: %d\n", si->wait_ms);
 	}
 	raw_spin_unlock_irqrestore(&f2fs_stat_lock, flags);
 	return 0;

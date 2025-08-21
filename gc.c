@@ -41,6 +41,7 @@ static int gc_thread_func(void *data)
 		.err_gc_skipped = false };
 
 	wait_ms = gc_th->min_sleep_time;
+	sbi->wait_ms = wait_ms;
 
 	set_freezable();
 	do {
@@ -68,6 +69,7 @@ static int gc_thread_func(void *data)
 
 		if (sbi->sb->s_writers.frozen >= SB_FREEZE_WRITE) {
 			increase_sleep_time(gc_th, &wait_ms);
+			sbi->wait_ms = wait_ms;
 			stat_other_skip_bggc_count(sbi);
 			continue;
 		}
@@ -99,6 +101,7 @@ static int gc_thread_func(void *data)
 		if (sbi->gc_mode == GC_URGENT_HIGH ||
 				sbi->gc_mode == GC_URGENT_MID) {
 			wait_ms = gc_th->urgent_sleep_time;
+			sbi->wait_ms = wait_ms;
 			f2fs_down_write(&sbi->gc_lock);
 			goto do_gc;
 		}
@@ -113,6 +116,7 @@ static int gc_thread_func(void *data)
 
 		if (!is_idle(sbi, GC_TIME)) {
 			increase_sleep_time(gc_th, &wait_ms);
+			sbi->wait_ms = wait_ms;
 			f2fs_up_write(&sbi->gc_lock);
 			stat_io_skip_bggc_count(sbi);
 			goto next;
@@ -121,19 +125,24 @@ static int gc_thread_func(void *data)
 		if (f2fs_sb_has_blkzoned(sbi) || f2fs_sb_has_splitftl(sbi)) {
 			if (has_enough_free_blocks(sbi, LIMIT_NO_ZONED_GC)) {
 				wait_ms = gc_th->no_gc_sleep_time;
+				sbi->wait_ms = wait_ms;
 				f2fs_up_write(&sbi->gc_lock);
 				goto next;
 			}
-			if (wait_ms == gc_th->no_gc_sleep_time)
+			if (wait_ms == gc_th->no_gc_sleep_time) {
 				wait_ms = gc_th->max_sleep_time;
+				sbi->wait_ms = wait_ms;
+			}
 		}
 
 		if (need_to_boost_gc(sbi)) {
 			decrease_sleep_time(gc_th, &wait_ms);
+			sbi->wait_ms = wait_ms;
 			if (f2fs_sb_has_blkzoned(sbi) || f2fs_sb_has_splitftl(sbi))
 				gc_control.one_time = true;
 		} else {
 			increase_sleep_time(gc_th, &wait_ms);
+			sbi->wait_ms = wait_ms;
 		}
 do_gc:
 		stat_inc_gc_call_count(sbi, foreground ?
@@ -153,12 +162,16 @@ do_gc:
 		/* if return value is not zero, no victim was selected */
 		if (f2fs_gc(sbi, &gc_control)) {
 			/* don't bother wait_ms by foreground gc */
-			if (!foreground)
+			if (!foreground) {
 				wait_ms = gc_th->no_gc_sleep_time;
+				sbi->wait_ms = wait_ms;
+			}
 		} else {
 			/* reset wait_ms to default sleep time */
-			if (wait_ms == gc_th->no_gc_sleep_time)
+			if (wait_ms == gc_th->no_gc_sleep_time) {
 				wait_ms = gc_th->min_sleep_time;
+				sbi->wait_ms = wait_ms;
+			}
 		}
 
 		if (foreground)

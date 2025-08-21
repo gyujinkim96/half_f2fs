@@ -1832,6 +1832,8 @@ struct f2fs_sb_info {
 	spinlock_t iostat_lat_lock;
 	struct iostat_lat_info *iostat_io_lat;
 #endif
+
+	unsigned int wait_ms;
 };
 
 /* Definitions to access f2fs_sb_info */
@@ -2881,7 +2883,8 @@ static inline bool is_inflight_read_io(struct f2fs_sb_info *sbi)
 static inline bool is_idle(struct f2fs_sb_info *sbi, int type)
 {
 	bool zoned_gc = (type == GC_TIME &&
-			F2FS_HAS_FEATURE(sbi, F2FS_FEATURE_BLKZONED));
+			(F2FS_HAS_FEATURE(sbi, F2FS_FEATURE_BLKZONED) ||
+			F2FS_HAS_FEATURE(sbi, F2FS_FEATURE_SPLITFTL)));
 
 	if (sbi->gc_mode == GC_URGENT_HIGH)
 		return true;
@@ -4034,6 +4037,18 @@ struct f2fs_stat_info {
 	unsigned int block_count[2];
 	unsigned int inplace_count;
 	unsigned long long base_mem, cache_mem, page_mem;
+
+	unsigned int lower_secs, upper_secs;
+	bool curseg_space;
+	unsigned int wait_ms;
+
+	int node_secs;
+	int dent_secs;
+	int imeta_secs;
+	int all_meta_secs;
+	int min_ssr_sections;
+	int reserved_sections;
+	int ssr_threshold;
 };
 
 static inline struct f2fs_stat_info *F2FS_STAT(struct f2fs_sb_info *sbi)
@@ -4585,7 +4600,7 @@ static inline bool f2fs_hw_should_discard(struct f2fs_sb_info *sbi)
 
 static inline bool f2fs_bdev_support_discard(struct block_device *bdev)
 {
-	return bdev_max_discard_sectors(bdev) || bdev_is_zoned(bdev);
+	return bdev_max_discard_sectors(bdev) || bdev_is_zoned(bdev) ||  bdev_is_splitftl(bdev);
 }
 
 static inline bool f2fs_hw_support_discard(struct f2fs_sb_info *sbi)
