@@ -1401,6 +1401,17 @@ static int read_node_page(struct page *page, blk_opf_t op_flags)
 
 	fio.new_blkaddr = fio.old_blkaddr = ni.blk_addr;
 
+		// if (sbi->ssr_started) {
+		// 	// printk("node: send fio %llu\n", fio.new_blkaddr);
+		// 	/* blkaddr => segment, and section 출력 */
+		// 	{
+		// 		unsigned int segno = GET_SEGNO(sbi, fio.new_blkaddr);
+		// 		unsigned int secno = GET_SEC_FROM_SEG(sbi, segno);
+		// 		printk("node: blkaddr %llu -> seg %u, sec %u\n",
+		// 		       fio.new_blkaddr, segno, secno);
+		// 	}
+		// }
+
 	err = f2fs_submit_page_bio(&fio);
 
 	if (!err)
@@ -1450,15 +1461,23 @@ repeat:
 		return ERR_PTR(-ENOMEM);
 
 	err = read_node_page(page, 0);
+	
 	if (err < 0) {
 		goto out_put_err;
 	} else if (err == LOCKED_PAGE) {
 		err = 0;
+		// if (sbi->ssr_started) {
+		// 	printk("node: read node page nid=%lu\n", nid);
+		// }
 		goto page_hit;
 	}
 
-	if (parent)
+	if (parent) {
 		f2fs_ra_node_pages(parent, start + 1, MAX_RA_NODE);
+		// if (sbi->ssr_started) {
+		// 	printk("node: read ahead node page nid=%lu\n", nid);
+		// }
+	}
 
 	lock_page(page);
 
@@ -1476,6 +1495,10 @@ repeat:
 		err = -EFSBADCRC;
 		goto out_err;
 	}
+
+	// if (sbi->ssr_started) {
+	// 	printk("node: everything miss nid=%lu\n", nid);
+	// }
 page_hit:
 	if (likely(nid == nid_of_node(page)))
 		return page;
