@@ -25,8 +25,8 @@
 
 static struct kmem_cache *victim_entry_slab;
 
-static unsigned int count_bits(const unsigned long *addr,
-				unsigned int offset, unsigned int len);
+// static unsigned int count_bits(const unsigned long *addr,
+// 				unsigned int offset, unsigned int len);
 
 static int gc_thread_func(void *data)
 {
@@ -285,9 +285,15 @@ static void select_policy(struct f2fs_sb_info *sbi, int gc_type,
 
 	if (p->alloc_mode == SSR) {
 		p->gc_mode = GC_GREEDY;
-		p->dirty_bitmap = dirty_i->dirty_segmap[type];
-		p->max_search = dirty_i->nr_dirty[type];
-		p->ofs_unit = 1;
+		if (__is_large_section(sbi) && test_opt(sbi, BLOCK_SSR)) {
+			p->dirty_bitmap = dirty_i->dirty_secmap[type];
+			p->max_search = dirty_i->nr_dirty_sec[type];
+			p->ofs_unit = SEGS_PER_SEC(sbi);
+		} else {
+			p->dirty_bitmap = dirty_i->dirty_segmap[type];
+			p->max_search = dirty_i->nr_dirty[type];
+			p->ofs_unit = 1;
+		}
 	} else if (p->alloc_mode == AT_SSR) {
 		p->gc_mode = GC_GREEDY;
 		p->dirty_bitmap = dirty_i->dirty_segmap[type];
@@ -297,9 +303,8 @@ static void select_policy(struct f2fs_sb_info *sbi, int gc_type,
 		p->gc_mode = select_gc_type(sbi, gc_type);
 		p->ofs_unit = SEGS_PER_SEC(sbi);
 		if (__is_large_section(sbi)) {
-			p->dirty_bitmap = dirty_i->dirty_secmap;
-			p->max_search = count_bits(p->dirty_bitmap,
-						0, MAIN_SECS(sbi));
+			p->dirty_bitmap = dirty_i->dirty_secmap[DIRTY];
+			p->max_search = dirty_i->nr_dirty_sec[DIRTY];
 		} else {
 			p->dirty_bitmap = dirty_i->dirty_segmap[DIRTY];
 			p->max_search = dirty_i->nr_dirty[DIRTY];
@@ -330,8 +335,12 @@ static unsigned int get_max_cost(struct f2fs_sb_info *sbi,
 				struct victim_sel_policy *p)
 {
 	/* SSR allocates in a segment unit */
-	if (p->alloc_mode == SSR)
-		return BLKS_PER_SEG(sbi);
+	if (p->alloc_mode == SSR) {
+		if (test_opt(sbi, BLOCK_SSR))
+			return CAP_BLKS_PER_SEC(sbi);
+		else
+			return BLKS_PER_SEG(sbi);
+	}
 	else if (p->alloc_mode == AT_SSR)
 		return UINT_MAX;
 
@@ -401,8 +410,12 @@ static unsigned int get_cb_cost(struct f2fs_sb_info *sbi, unsigned int segno)
 static inline unsigned int get_gc_cost(struct f2fs_sb_info *sbi,
 			unsigned int segno, struct victim_sel_policy *p)
 {
-	if (p->alloc_mode == SSR)
-		return get_seg_entry(sbi, segno)->ckpt_valid_blocks;
+	if (p->alloc_mode == SSR) {
+		if (test_opt(sbi, BLOCK_SSR))
+			return get_ckpt_valid_blocks(sbi, segno, true);
+		else
+			return get_seg_entry(sbi, segno)->ckpt_valid_blocks;
+	}
 
 	/* alloc_mode == LFS */
 	if (p->gc_mode == GC_GREEDY)
@@ -414,17 +427,17 @@ static inline unsigned int get_gc_cost(struct f2fs_sb_info *sbi,
 	return 0;
 }
 
-static unsigned int count_bits(const unsigned long *addr,
-				unsigned int offset, unsigned int len)
-{
-	unsigned int end = offset + len, sum = 0;
+// static unsigned int count_bits(const unsigned long *addr,
+// 				unsigned int offset, unsigned int len)
+// {
+// 	unsigned int end = offset + len, sum = 0;
 
-	while (offset < end) {
-		if (test_bit(offset++, addr))
-			++sum;
-	}
-	return sum;
-}
+// 	while (offset < end) {
+// 		if (test_bit(offset++, addr))
+// 			++sum;
+// 	}
+// 	return sum;
+// }
 
 static bool f2fs_check_victim_tree(struct f2fs_sb_info *sbi,
 				struct rb_root_cached *root)
@@ -789,6 +802,8 @@ int f2fs_get_victim(struct f2fs_sb_info *sbi, unsigned int *result,
 	bool is_atgc;
 	int ret = 0;
 
+	/* Print the cost of the selected victim segment for debugging */
+
 	mutex_lock(&dirty_i->seglist_lock);
 	last_segment = MAIN_SECS(sbi) * SEGS_PER_SEC(sbi);
 
@@ -901,8 +916,13 @@ retry:
 				 * for writes which can be full by checkpointed
 				 * and newly written blocks.
 				 */
-				if (!f2fs_segment_has_free_slot(sbi, segno))
-					goto next;
+				if (test_opt(sbi, BLOCK_SSR)) {
+					if (!f2fs_section_has_free_slot(sbi, segno))
+						goto next;
+				} else {
+					if (!f2fs_segment_has_free_slot(sbi, segno))
+						goto next;
+				}
 			}
 		}
 
@@ -963,10 +983,20 @@ got_result:
 
 	}
 out:
-	if (p.min_segno != NULL_SEGNO)
+	if (p.min_segno != NULL_SEGNO) {
 		trace_f2fs_get_victim(sbi->sb, type, gc_type, &p,
 				sbi->cur_victim_sec,
 				prefree_segments(sbi), free_segments(sbi));
+		/* Print the cost of the found victim segment */
+		{
+			unsigned int victim_cost = p.min_cost;
+			/* If cost wasn't computed (preselected victim), compute it for LFS/SSR */
+			if (p.gc_mode != GC_AT && p.alloc_mode != AT_SSR &&
+				victim_cost == get_max_cost(sbi, &p))
+				victim_cost = get_gc_cost(sbi, p.min_segno, &p);
+			// f2fs_info(sbi, "segno: %u. victim cost: %u", *result, victim_cost);
+		}
+	}
 	mutex_unlock(&dirty_i->seglist_lock);
 
 	return ret;

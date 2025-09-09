@@ -2591,8 +2591,9 @@ bool f2fs_should_update_outplace(struct inode *inode, struct f2fs_io_info *fio)
 		return false;
 	if (fio && is_sbi_flag_set(sbi, SBI_NEED_FSCK))
 		return true;
-	if (f2fs_lfs_mode(sbi))
-		return true;
+	if (f2fs_lfs_mode(sbi))	
+		return true;	
+	// if (f2fs_lfs_mode(sbi) && !test_opt(sbi, BLOCK_SSR))
 	if (S_ISDIR(inode->i_mode))
 		return true;
 	if (IS_NOQUOTA(inode))
@@ -4244,3 +4245,94 @@ static int f2fs_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
 const struct iomap_ops f2fs_iomap_ops = {
 	.iomap_begin	= f2fs_iomap_begin,
 };
+
+static inline sector_t f2fs_blk_to_sect(struct f2fs_sb_info *sbi, block_t blk)
+{
+	/* 4KiB 블록(=2^12) → 512B 섹터(=2^9): shift by (12-9)=3 */
+	return (sector_t)blk << (F2FS_BLKSIZE_BITS - 9);
+}
+
+void f2fs_signal_ssr_start(struct f2fs_sb_info *sbi,
+                   struct curseg_info *curseg, int type)
+{
+	struct bio *bio;
+	struct page *page;
+	struct block_device *bdev;
+	block_t fs_blk, dev_local_blk;
+	sector_t dev_local_sect;
+
+    /* 기본 방어 */
+    if (!sbi || !curseg || sbi->s_ndevs < 2)
+        return;
+    if (!FDEV(1).bdev)
+        return;
+
+    /* 장치가 SplitFTL 지원이 없으면 장치 쓰기 신호는 금지 (데이터 손상 방지) */
+    if (!f2fs_sb_has_splitftl(sbi)) {
+        return;
+	}
+
+	bdev = FDEV(1).bdev;
+
+	/* 1) next_segno의 세그먼트 시작 블록 (FS 전역 블록 번호) */
+	fs_blk = START_BLOCK(sbi, curseg->next_segno);
+
+	/* 2) 디바이스 1 로컬 블록 번호로 변환: 전역에서 start_blk를 빼준다 */
+	if (unlikely(fs_blk < FDEV(1).start_blk))
+		return; /* segno가 디바이스1 영역이 아니면 방어적으로 중단 */
+
+	dev_local_blk = fs_blk - FDEV(1).start_blk;
+	dev_local_blk = (dev_local_blk >> 13) << 13;
+	dev_local_blk += type;
+
+
+	/* 선택적으로: 범위 체크 (디바이스1 블록 범위를 벗어나면 중단) */
+#ifdef CONFIG_F2FS_CHECK_FS
+	if (unlikely(FDEV(1).end_blk && fs_blk >= FDEV(1).end_blk))
+		return;
+#endif
+
+	/* 3) 섹터 단위로 변환하고 type을 lower part에 인코딩 */
+	dev_local_sect = f2fs_blk_to_sect(sbi, dev_local_blk);
+	// printk("local sect %llu\n", dev_local_sect);
+	/* rw command = block_id + type (type in lower part) */
+	// dev_local_sect = (dev_local_sect & ~0x7ULL) | (type & 0x7);
+
+	page = alloc_page(GFP_NOFS);
+	if (!page)
+		return;
+
+	if (f2fs_target_device_index(sbi, START_BLOCK(sbi, curseg->next_segno)) == 1){
+		unsigned int start_segno = GET_SEGNO(sbi, FDEV(1).start_blk);
+		printk("[F2FS-SIGNAL] sending signal to type=%d %u(%u)\n", 
+			type,
+			curseg->next_segno-start_segno, GET_SEC_FROM_SEG(sbi, curseg->next_segno-start_segno));
+	}
+
+
+	zero_user_segment(page, 0, PAGE_SIZE);
+	memset(page_address(page), 0xAA, 8); /* 간단한 시그니처 */
+
+	bio = bio_alloc(bdev, 1, REQ_OP_WRITE | REQ_SYNC | REQ_SSR_SIGNAL, GFP_NOFS);
+	if (!bio) {
+		__free_page(page);
+		return;
+	}
+
+	/* 디바이스 1의 로컬 섹터 주소로 지정 */
+	bio->bi_iter.bi_sector = dev_local_sect;
+
+	/* 한 페이지만 실어서 전송 (크기 매크로가 있다면 min 처리) */
+	if (bio_add_page(bio, page, min_t(unsigned int, PAGE_SIZE, F2FS_SSR_SIGNAL_SIZE), 0) == 0) {
+		bio_put(bio);
+		__free_page(page);
+		return;
+	}
+
+	submit_bio_wait(bio);
+	// printk("signal_ssr: sent signal bio to dev1 @sect=%llu\n",
+	//        (unsigned long long)dev_local_sect);
+
+	bio_put(bio);
+	__free_page(page);
+}

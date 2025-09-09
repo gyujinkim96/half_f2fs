@@ -113,6 +113,12 @@ extern const char *f2fs_fault_name[FAULT_MAX];
 #define	F2FS_MOUNT_GC_MERGE		0x02000000
 #define F2FS_MOUNT_COMPRESS_CACHE	0x04000000
 #define F2FS_MOUNT_AGE_EXTENT_CACHE	0x08000000
+#define F2FS_MOUNT_BLOCK_SSR	0x10000000
+
+/* SSR signaling to device */
+#define F2FS_SSR_SIGNAL_LBA     0xFFFFFFFFFFFFFFFFULL
+#define F2FS_SSR_SIGNAL_SIZE    4096  /* 1 page */
+// #define REQ_SSR_SIGNAL          (1ULL << 27)  /* Custom flag for SSR signal */
 
 #define F2FS_OPTION(sbi)	((sbi)->mount_opt)
 #define clear_opt(sbi, option)	(F2FS_OPTION(sbi).opt &= ~F2FS_MOUNT_##option)
@@ -1834,6 +1840,8 @@ struct f2fs_sb_info {
 #endif
 
 	unsigned int wait_ms;
+
+	bool ssr_started;
 };
 
 /* Definitions to access f2fs_sb_info */
@@ -2548,7 +2556,19 @@ static inline void release_atomic_write_cnt(struct inode *inode)
 
 static inline s64 get_pages(struct f2fs_sb_info *sbi, int count_type)
 {
-	return atomic_read(&sbi->nr_pages[count_type]);
+    return atomic_read(&sbi->nr_pages[count_type]);
+}
+
+/*
+ * Helper to check if there are outstanding write I/Os that could interfere
+ * with starting a new section SSR session. We consider regular writeback,
+ * checkpoint data writeback, and direct I/O writes.
+ */
+static inline bool f2fs_has_outstanding_write_io(struct f2fs_sb_info *sbi)
+{
+    return get_pages(sbi, F2FS_WB_DATA) ||
+           get_pages(sbi, F2FS_WB_CP_DATA) ||
+           get_pages(sbi, F2FS_DIO_WRITE);
 }
 
 static inline int get_dirty_pages(struct inode *inode)
@@ -3767,6 +3787,7 @@ int f2fs_disable_cp_again(struct f2fs_sb_info *sbi, block_t unusable);
 void f2fs_release_discard_addrs(struct f2fs_sb_info *sbi);
 int f2fs_npages_for_summary_flush(struct f2fs_sb_info *sbi, bool for_ra);
 bool f2fs_segment_has_free_slot(struct f2fs_sb_info *sbi, int segno);
+bool f2fs_section_has_free_slot(struct f2fs_sb_info *sbi, int segno);
 void f2fs_init_inmem_curseg(struct f2fs_sb_info *sbi);
 void f2fs_save_inmem_curseg(struct f2fs_sb_info *sbi);
 void f2fs_restore_inmem_curseg(struct f2fs_sb_info *sbi);
@@ -3892,6 +3913,8 @@ int f2fs_init_bio_entry_cache(void);
 void f2fs_destroy_bio_entry_cache(void);
 void f2fs_submit_read_bio(struct f2fs_sb_info *sbi, struct bio *bio,
 			  enum page_type type);
+void f2fs_signal_ssr_start(struct f2fs_sb_info *sbi,
+			   struct curseg_info *curseg, int type);
 int f2fs_init_write_merge_io(struct f2fs_sb_info *sbi);
 void f2fs_submit_merged_write(struct f2fs_sb_info *sbi, enum page_type type);
 void f2fs_submit_merged_write_cond(struct f2fs_sb_info *sbi,

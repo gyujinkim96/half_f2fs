@@ -35,6 +35,7 @@
 #include "xattr.h"
 #include "gc.h"
 #include "iostat.h"
+#include "mem_share.h"
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/f2fs.h>
@@ -189,6 +190,7 @@ enum {
 	Opt_memory_mode,
 	Opt_age_extent_cache,
 	Opt_errors,
+	Opt_block_ssr,
 	Opt_err,
 };
 
@@ -268,6 +270,7 @@ static match_table_t f2fs_tokens = {
 	{Opt_memory_mode, "memory=%s"},
 	{Opt_age_extent_cache, "age_extent_cache"},
 	{Opt_errors, "errors=%s"},
+	{Opt_block_ssr, "block_ssr"},
 	{Opt_err, NULL},
 };
 
@@ -1309,6 +1312,9 @@ static int parse_options(struct super_block *sb, char *options, bool is_remount)
 			}
 			kfree(name);
 			break;
+		case Opt_block_ssr:
+			set_opt(sbi, BLOCK_SSR);
+			break;
 		default:
 			f2fs_err(sbi, "Unrecognized mount option \"%s\" or missing value",
 				 p);
@@ -2111,6 +2117,9 @@ static int f2fs_show_options(struct seq_file *seq, struct dentry *root)
 		seq_printf(seq, ",memory=%s", "normal");
 	else if (F2FS_OPTION(sbi).memory_mode == MEMORY_MODE_LOW)
 		seq_printf(seq, ",memory=%s", "low");
+
+	if (test_opt(sbi, BLOCK_SSR))
+		seq_puts(seq, ",block_ssr");
 
 	if (F2FS_OPTION(sbi).errors == MOUNT_ERRORS_READONLY)
 		seq_printf(seq, ",errors=%s", "remount-ro");
@@ -4374,6 +4383,11 @@ static void f2fs_tuning_parameters(struct f2fs_sb_info *sbi)
 	sbi->readdir_ra = true;
 }
 
+/* mem_share helpers */
+int f2fs_memshare_get(void);
+void f2fs_memshare_put(void);
+void setup_new_section_ssr(struct f2fs_sb_info *sbi, struct curseg_info *curseg, unsigned int segno,  int type);
+
 static int f2fs_fill_super(struct super_block *sb, void *data, int silent)
 {
 	struct f2fs_sb_info *sbi;
@@ -4384,6 +4398,8 @@ static int f2fs_fill_super(struct super_block *sb, void *data, int silent)
 	char *options = NULL;
 	int recovery, i, valid_super_block;
 	struct curseg_info *seg_i;
+	// struct curseg_info *warm_node_seg_i;
+	// struct curseg_info *cold_node_seg_i;
 	int retry_cnt = 1;
 #ifdef CONFIG_QUOTA
 	bool quota_enabled = false;
@@ -4621,6 +4637,51 @@ try_onemore:
 		sbi->kbytes_written =
 			le64_to_cpu(seg_i->journal->info.kbytes_written);
 
+
+	// warm_node_seg_i = CURSEG_I(sbi, CURSEG_WARM_NODE);
+
+	// if (warm_node_seg_i->cursec) {
+	// 	const u8 *resv = warm_node_seg_i->journal->info.reserved;
+	// 	const size_t stride = 1 + F2FS_SSR_PAYLOAD;
+	// 	const size_t resv_len = EXTRA_INFO_RESERVED;
+
+	// 	for (i = 0; i < SHARING_LOGS/2; i++) {
+	// 		struct curseg_info *cur_seg = CURSEG_I(sbi, i);
+	// 		size_t idx = (size_t)i * stride;
+	// 		if (idx >= resv_len)
+	// 			break; /* out-of-bound guard */
+
+	// 		if (cur_seg->cursec) {
+	// 			/* section_ssr flag (1 byte) */
+	// 			cur_seg->cursec->section_ssr = !!resv[idx];
+
+	// 			if (!cur_seg->cursec->section_ssr)
+	// 				continue;
+
+	// 			memcpy(cur_seg->cursec->valid_map[i], resv+idx+1, F2FS_SSR_PAYLOAD);
+	// 		}
+	// 	}
+
+	// 	resv = cold_node_seg_i->journal->info.reserved;
+	// 	for (i = SHARING_LOGS/2; i < SHARING_LOGS; i++) {
+	// 		struct curseg_info *cur_seg = CURSEG_I(sbi, i);
+	// 		size_t idx = (size_t)i * stride;
+	// 		if (idx >= resv_len)
+	// 			break; /* out-of-bound guard */
+
+	// 		if (cur_seg->cursec) {
+	// 			/* section_ssr flag (1 byte) */
+	// 			cur_seg->cursec->section_ssr = !!resv[idx];
+
+	// 			if (!cur_seg->cursec->section_ssr)
+	// 				continue;
+
+	// 			memcpy(cur_seg->cursec->valid_map[i], resv+idx+1, F2FS_SSR_PAYLOAD);
+	// 		}
+	// 	}
+	// }
+
+
 	f2fs_build_gc_manager(sbi);
 
 	err = f2fs_build_stats(sbi);
@@ -4785,6 +4846,32 @@ reset_checkpoint:
 	f2fs_update_time(sbi, CP_TIME);
 	f2fs_update_time(sbi, REQ_TIME);
 	clear_sbi_flag(sbi, SBI_CP_DISABLED_QUICK);
+
+	err = f2fs_memshare_get();
+    if (err) {
+        f2fs_err(sbi, "memshare init failed: %d", err);
+        goto sync_free_meta;
+    }	
+
+	// printk("called from super\n");
+	// memshare_set_bitmap_test(sbi, 0, 400);
+	// memshare_set_bitmap_test(sbi, 1, 100);
+	// memshare_set_bitmap_test(sbi, 2, 200);
+	// memshare_set_bitmap_test(sbi, 3, 300);
+	// memshare_set_bitmap_test(sbi, 4, 800);
+	// memshare_set_bitmap_test(sbi, 5, 500);
+
+	// {
+	// 	int tmp = seg_i->next_segno;
+	// 	seg_i->next_segno = 400;
+	// 	setup_new_section_ssr(sbi, seg_i, seg_i->next_segno, 4);
+	// 	f2fs_signal_ssr_start(sbi, seg_i, 4);
+		
+
+	// 	seg_i->next_segno = tmp;
+
+	// }
+
 	return 0;
 
 sync_free_meta:
@@ -4914,6 +5001,8 @@ static void kill_f2fs_super(struct super_block *sb)
 		if (is_sbi_flag_set(sbi, SBI_IS_RECOVERED) && f2fs_readonly(sb))
 			sb->s_flags &= ~SB_RDONLY;
 	}
+	/* balance mem_share reference from mount */
+	f2fs_memshare_put();
 	kill_block_super(sb);
 	/* Release block devices last, after fscrypt_destroy_keyring(). */
 	if (sbi) {

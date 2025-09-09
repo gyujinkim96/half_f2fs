@@ -7,6 +7,7 @@
  */
 #include <linux/blkdev.h>
 #include <linux/backing-dev.h>
+#include "mem_share.h"
 
 /* constant macro */
 #define NULL_SEGNO			((unsigned int)(~0))
@@ -278,13 +279,19 @@ enum dirty_type {
 
 struct dirty_seglist_info {
 	unsigned long *dirty_segmap[NR_DIRTY_TYPE];
-	unsigned long *dirty_secmap;
+	unsigned long *dirty_secmap[NR_DIRTY_TYPE];
 	struct mutex seglist_lock;		/* lock for segment bitmaps */
 	int nr_dirty[NR_DIRTY_TYPE];		/* # of dirty segments */
+	int nr_dirty_sec[NR_DIRTY_TYPE];
 	unsigned long *victim_secmap;		/* background GC victims */
 	unsigned long *pinned_secmap;		/* pinned victims from foreground GC */
 	unsigned int pinned_secmap_cnt;		/* count of victims which has pinned data */
 	bool enable_pin_section;		/* enable pinning section */
+};
+
+struct cursec_info {
+	bool section_ssr;
+	unsigned char valid_map[SHARING_LOGS][F2FS_SSR_PAYLOAD];
 };
 
 /* for active log information */
@@ -301,6 +308,8 @@ struct curseg_info {
 	unsigned int next_segno;		/* preallocated segment */
 	int fragment_remained_chunk;		/* remained block size in a chunk for block fragmentation mode */
 	bool inited;				/* indicate inmem log is inited */
+
+	struct cursec_info *cursec;
 };
 
 struct sit_entry_set {
