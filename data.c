@@ -4302,14 +4302,6 @@ void f2fs_signal_ssr_start(struct f2fs_sb_info *sbi,
 	if (!page)
 		return;
 
-	if (f2fs_target_device_index(sbi, START_BLOCK(sbi, curseg->next_segno)) == 1){
-		unsigned int start_segno = GET_SEGNO(sbi, FDEV(1).start_blk);
-		printk("[F2FS-SIGNAL] sending signal to type=%d %u(%u)\n", 
-			type,
-			curseg->next_segno-start_segno, GET_SEC_FROM_SEG(sbi, curseg->next_segno-start_segno));
-	}
-
-
 	zero_user_segment(page, 0, PAGE_SIZE);
 	memset(page_address(page), 0xAA, 8); /* 간단한 시그니처 */
 
