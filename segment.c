@@ -2993,6 +2993,7 @@ static bool use_seg_from_section_ssr(struct f2fs_sb_info *sbi, struct curseg_inf
 	unsigned int cur_sec = GET_SEC_FROM_SEG(sbi, curseg->segno);
 	unsigned int end     = GET_SEG_FROM_SEC(sbi, cur_sec + 1);
 	unsigned int next    = curseg->segno + 1;
+	unsigned short next_blkoff = curseg->next_blkoff+1;
 	bool advanced = false;
 
 	if (!test_opt(sbi, BLOCK_SSR)) {
@@ -3005,14 +3006,14 @@ static bool use_seg_from_section_ssr(struct f2fs_sb_info *sbi, struct curseg_inf
 	
 	/* 같은 섹션 내부에서만 스캔 */
 	while (next < end) {
-		if (f2fs_find_next_ssr_block(sbi, curseg, next, type, curseg->next_blkoff+1) < f2fs_usable_blks_in_seg(sbi, next)) {
+		if (f2fs_find_next_ssr_block(sbi, curseg, next, type, next_blkoff) < f2fs_usable_blks_in_seg(sbi, next)) {
 			curseg->next_segno = next;
-			change_curseg(sbi, type);
 			advanced = true;
 			break;
 		}
 
 		next++;
+		next_blkoff = 0;
 	}
 
 	if (!advanced)
@@ -3083,7 +3084,7 @@ static int f2fs_find_next_ssr_block(struct f2fs_sb_info *sbi,
 	if (test_opt(sbi, BLOCK_SSR) && seg->cursec->section_ssr) {
 		int sec = GET_SEC_FROM_SEG(sbi, segno);
 		int first_seg = GET_SEG_FROM_SEC(sbi, sec);
-		unsigned long* start = (unsigned long*) (seg->cursec->valid_map[type] + (segno - first_seg) * BLKS_PER_SEG(sbi) / 8);
+		unsigned long *start = (unsigned long *)seg->cursec->valid_map[type] + BIT_WORD((segno - first_seg) * BLKS_PER_SEG(sbi));
 		uint64_t ret = __find_rev_next_zero_bit(start, BLKS_PER_SEG(sbi), next_blkoff);
 
 		return ret;
@@ -3427,6 +3428,11 @@ void f2fs_allocate_segment_for_resize(struct f2fs_sb_info *sbi, int type,
 			}
 		} else {
 			new_curseg(sbi, type, true);
+		}
+	} else {
+		change_curseg(sbi, type);
+		if (curseg->next_blkoff >= BLKS_PER_SEG(sbi)) {
+			printk("seg %d failed to change 2 - %s\n", curseg->segno, __func__);
 		}
 	}
 	stat_inc_seg_type(sbi, curseg);
@@ -3914,6 +3920,11 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 					if (curseg->next_blkoff >= BLKS_PER_SEG(sbi)) {
 						printk("seg %d failed to change - %s\n", curseg->segno, __func__);
 					}
+				}
+			} else {
+				change_curseg(sbi, type);
+				if (curseg->next_blkoff >= BLKS_PER_SEG(sbi)) {
+					printk("seg %d failed to change 2 - %s\n", curseg->segno, __func__);
 				}
 			}
 			stat_inc_seg_type(sbi, curseg);
