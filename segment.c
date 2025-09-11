@@ -2988,9 +2988,6 @@ static void find_first_writable_segment(struct f2fs_sb_info *sbi, struct curseg_
 }
 
 static bool ssr_started = false;
-static uint64_t cur_block;
-static int sub_cnt[4];
-
 
 static bool use_seg_from_section_ssr(struct f2fs_sb_info *sbi, struct curseg_info *curseg, int type) {
 	unsigned int cur_sec = GET_SEC_FROM_SEG(sbi, curseg->segno);
@@ -3033,8 +3030,9 @@ static int new_curseg(struct f2fs_sb_info *sbi, int type, bool new_sec)
 {
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
 	unsigned int segno = curseg->segno;
-	unsigned int old_segno = segno;
 	bool pinning = type == CURSEG_COLD_DATA_PINNED;
+
+	unsigned int old_segno = segno;
 
 	if (curseg->inited)
 		write_sum_page(sbi, curseg->sum_blk, GET_SUM_BLOCK(sbi, segno));
@@ -3088,18 +3086,6 @@ static int f2fs_find_next_ssr_block(struct f2fs_sb_info *sbi,
 		unsigned long* start = (unsigned long*) (seg->cursec->valid_map[type] + (segno - first_seg) * BLKS_PER_SEG(sbi) / 8);
 		uint64_t ret = __find_rev_next_zero_bit(start, BLKS_PER_SEG(sbi), next_blkoff);
 
-		int test;
-		int ssr_test;
-
-		if (ret < BLKS_PER_SEG(sbi)) {
-			test = f2fs_test_bit(ret, get_seg_entry(sbi, segno)->cur_valid_map);
-			
-			// if (test) {
-			// 	printk(" segno [%d]. next ssr block is %llu    it is currently valid %d.  and is valid in ssr = 0\n",
-			// 		segno, ret, test);
-			// }
-		}
-
 		return ret;
 	} else {
 		return __next_free_blkoff(sbi, segno, next_blkoff);
@@ -3149,22 +3135,6 @@ static void change_curseg(struct f2fs_sb_info *sbi, int type)
 			type, old_segno-start_segno, GET_SEC_FROM_SEG(sbi, old_segno-start_segno), 
 			new_segno-start_segno, GET_SEC_FROM_SEG(sbi, new_segno-start_segno));
 	}
-
-	if (f2fs_target_device_index(sbi, START_BLOCK(sbi, new_segno)) == 1){
-		int cur_sec = GET_SEC_FROM_SEG(sbi, curseg->segno);
-		int next_sec = GET_SEC_FROM_SEG(sbi, curseg->next_segno);
-
-		if (cur_sec == next_sec) {
-			int idx = curseg->next_segno - GET_SEG_FROM_SEC(sbi, cur_sec);
-			// printk("  ssr chaning %d(%d) -> %d(%d),  idx=%d\n",
-			// 	curseg->segno, cur_sec, curseg->next_segno, next_sec, idx);
-		} else {
-			// printk("  ssr chaning %d(%d) -> %d(%d),  idx=%d\n",
-			// 	curseg->segno, cur_sec, curseg->next_segno, next_sec, 0);
-		}
-	}
-
-
 	
 	write_sum_page(sbi, curseg->sum_blk, GET_SUM_BLOCK(sbi, curseg->segno));
 
@@ -3310,8 +3280,6 @@ static int get_ssr_segment(struct f2fs_sb_info *sbi, int type,
 
 	/* f2fs_need_SSR() already forces to do this */
 	if (!f2fs_get_victim(sbi, &segno, BG_GC, seg_type, alloc_mode, age)) {
-		// f2fs_info(sbi, "SSR victim found: type=%d segno=%u (primary)",
-		// 	seg_type, segno);
 			curseg->next_segno = segno;
 			return 1;
 		}
@@ -3339,8 +3307,6 @@ static int get_ssr_segment(struct f2fs_sb_info *sbi, int type,
 		if (i == seg_type)
 			continue;
 		if (!f2fs_get_victim(sbi, &segno, BG_GC, i, alloc_mode, age)) {
-			// f2fs_info(sbi, "SSR victim found: type=%d segno=%u (fallback)",
-			// 	i, segno);
 			curseg->next_segno = segno;
 			return 1;
 		}
@@ -3350,7 +3316,6 @@ static int get_ssr_segment(struct f2fs_sb_info *sbi, int type,
 	if (unlikely(is_sbi_flag_set(sbi, SBI_CP_DISABLED))) {
 		segno = get_free_segment(sbi);
 		if (segno != NULL_SEGNO) {
-			// f2fs_info(sbi, "SSR victim found: segno=%u (free segment)", segno);
 			curseg->next_segno = segno;
 			return 1;
 		}
@@ -3385,30 +3350,17 @@ static void setup_new_section_ssr(struct f2fs_sb_info *sbi, struct curseg_info *
 	if (!test_opt(sbi, BLOCK_SSR))
 		return;
 
-	// curseg->cursec->section_ssr = true;
 
-	/* Allocate dest_map for bitmap OR operations */
 	for (idx = 0; idx < 1024; idx++) {
 		curseg->cursec->valid_map[type][idx] = 0;
 	}
-	// memset(curseg->cursec->valid_map[type], 0, sizeof(curseg->cursec->valid_map[type]));
-
 	for (idx = 0; idx < segs_per_sec; idx++) {
 		unsigned int s          = base_segno + idx;
-		// unsigned int usable     = f2fs_usable_blks_in_seg(sbi, s);
-
 		struct seg_entry *se = get_seg_entry(sbi, s);
-		unsigned long *ckpt_map = (unsigned long *)se->ckpt_valid_map;
-		unsigned long *cur_map  = (unsigned long *)se->cur_valid_map;
-		unsigned char *dest_map = (unsigned char*) SIT_I(sbi)->tmp_map;
-		// int entries = SIT_VBLOCK_MAP_SIZE / sizeof(unsigned long);
-		// unsigned int valid_cnt = 0;
 		int i;
-		int offset;
 				
-		/* Perform bitwise OR operation between ckpt_map and cur_map */
 		for (i = 0; i < BLKS_PER_SEG(sbi); i++) {
-			offset = BLKS_PER_SEG(sbi) * idx + i;
+			int offset = BLKS_PER_SEG(sbi) * idx + i;
 			if (f2fs_test_bit(i, se->ckpt_valid_map) || f2fs_test_bit(i, se->cur_valid_map)) {
 				f2fs_set_bit(offset, curseg->cursec->valid_map[type]);
 				non_valids++;
@@ -3416,69 +3368,11 @@ static void setup_new_section_ssr(struct f2fs_sb_info *sbi, struct curseg_info *
 				invalids++;
 			}
 		}
-		
-		/* Copy result to curseg->cursec->valid_map[type] */
-		// memcpy(curseg->cursec->valid_map[type], dest_map, F2FS_SSR_PAYLOAD);
-
-// #if BITS_PER_LONG == 64
-// 				const unsigned long m0 = 0x1111111111111111ULL;
-// 				const unsigned long m1 = 0x2222222222222222ULL;
-// 				const unsigned long m2 = 0x4444444444444444ULL;
-// 				const unsigned long m3 = 0x8888888888888888ULL;
-// #else
-// 				const unsigned long m0 = 0x11111111UL;
-// 				const unsigned long m1 = 0x22222222UL;
-// 				const unsigned long m2 = 0x44444444UL;
-// 				const unsigned long m3 = 0x88888888UL;
-// #endif
-
-// 				for (i = 0; i < entries; i++) {
-// 					unsigned long v = ckpt_map[i] | cur_map[i];
-// 					valid_cnt += hweight_long(v);
-// 					/* Count interleaving valid blocks for each partition */
-// 					part_total[0] += hweight_long(v & m0);
-// 					part_total[1] += hweight_long(v & m1);
-// 					part_total[2] += hweight_long(v & m2);
-// 					part_total[3] += hweight_long(v & m3);
-// 				}
-
-// 				// printk("current segno = %d.  valid blocks = %d. and valid cnt = %d. usable = %d\n", 
-// 				// 	s, se->valid_blocks, valid_cnt, usable);
-				
-
-// 				/* Clamp to usable blocks within the segment */
-// 				if (valid_cnt > usable)
-// 					valid_cnt = usable;
-
-// 				curseg->cursec->segment_left[idx] = usable - valid_cnt;
-// 				printk("sec %d.    segment_left[%d] = %d.    usable %d. valid_cnt %d\n",
-// 					 secno, idx, curseg->cursec->segment_left[idx], usable, valid_cnt);
-
-
-
-// 				total_valids += valid_cnt;
-// 			}
 	}
 
-	// printk("interleaving valids:  segno %d sec %d: 0=%d, 1=%d, 2=%d, 3=%d\n",
-	// 				segno, secno, part_total[0], part_total[1], part_total[2], part_total[3]);
-
 	curseg->cursec->section_ssr = true;
-
-	// todo next_blkoff == NULL => 그 다음 valid segment로
-
-	
-	// {
-	// 	int start_segno = GET_SEGNO(sbi, FDEV(1).start_blk);
-	// 	printk("setup_new_section_ssr. segno %llu (%llu).  valids in block = %u\n",
-	// 		curseg->segno-start_segno, GET_SEC_FROM_SEG(sbi, curseg->segno-start_segno), total_valids);
-	// 	printk("free segment left in f2fs %d\n", free_segments(sbi));
-	// }
-	
-	// printk(" segno %d  secno %d.  non_valids: %d  invalids: %d\n", segno, secno, non_valids, invalids);
-	
 	sbi->ssr_started = true;
-	memshare_set_bitmap(sbi, type, curseg, segno);
+	ssr_started = true;
 }
 
 void f2fs_allocate_segment_for_resize(struct f2fs_sb_info *sbi, int type,
@@ -3497,35 +3391,36 @@ void f2fs_allocate_segment_for_resize(struct f2fs_sb_info *sbi, int type,
 
 	if (!use_seg_from_section_ssr(sbi, curseg, type)) {
 		if (f2fs_need_SSR(sbi) && get_ssr_segment(sbi, type, SSR, 0)) {
-				if (test_opt(sbi, BLOCK_SSR)) {
-					/* SSR 대상 segno가 dev1 영역인지 명확히 검사 후에만
-						* dev1 로컬 섹션 번호로 변환하고 아래 3줄 실행 */
-					// unsigned int tgt = curseg->next_segno;
-					if (sbi->s_ndevs > 1) {
-						unsigned int start_segno = GET_SEGNO(sbi, FDEV(1).start_blk);
-						unsigned int new_segno = curseg->next_segno;
-						unsigned int old_segno = curseg->segno;
+			if (test_opt(sbi, BLOCK_SSR)) {
+				/* SSR 대상 segno가 dev1 영역인지 명확히 검사 후에만
+					* dev1 로컬 섹션 번호로 변환하고 아래 3줄 실행 */
+				// unsigned int tgt = curseg->next_segno;
+				if (sbi->s_ndevs > 1) {
+					unsigned int new_segno = curseg->next_segno;
+					bool need_to_signal_device = f2fs_target_device_index(sbi, START_BLOCK(sbi, new_segno)) == 1;
+					unsigned int start_segno = GET_SEGNO(sbi, FDEV(1).start_blk);
+					unsigned int old_segno = curseg->segno;
 
-						if (f2fs_target_device_index(sbi, START_BLOCK(sbi, new_segno)) == 1) {
-							ssr_started = true;
-							sbi->ssr_started = true;
-							cur_block = GET_SEC_FROM_SEG(sbi, curseg->next_segno);
-							memset(sub_cnt, 0, sizeof(sub_cnt));
+					setup_new_section_ssr(sbi, curseg, curseg->next_segno, type);
+					if (need_to_signal_device) {
+						memshare_set_bitmap(sbi, type, curseg, curseg->next_segno);
+						f2fs_signal_ssr_start(sbi, curseg, type);
+					}
 
-							setup_new_section_ssr(sbi, curseg, curseg->next_segno, type);
-							f2fs_signal_ssr_start(sbi, curseg, type);
-							find_first_writable_segment(sbi, curseg, type);
+					find_first_writable_segment(sbi, curseg, type);
 
-							
-							printk("[F2FS-SSR] type=%d  %u(%u) => %u(%u)\n", 
-								type, old_segno-start_segno, GET_SEC_FROM_SEG(sbi, old_segno-start_segno), 
-								new_segno-start_segno, GET_SEC_FROM_SEG(sbi, new_segno-start_segno));
-						} else {
-							printk("[LOG-FAILED2] device index not 1, raw_segno=%d\n", new_segno);
-						}
+					if (need_to_signal_device) {
+						printk("[F2FS-SSR] type=%d  %u(%u) => %u(%u)\n", 
+							type, old_segno-start_segno, GET_SEC_FROM_SEG(sbi, old_segno-start_segno), 
+							new_segno-start_segno, GET_SEC_FROM_SEG(sbi, new_segno-start_segno));
+					} else {
+						printk("[F2FS-SSR-DEV0] type=%d  %u(%u) => %u(%u)\n", 
+							type, old_segno, GET_SEC_FROM_SEG(sbi, old_segno), 
+							new_segno, GET_SEC_FROM_SEG(sbi, new_segno));
 					}
 				}
-			
+			}
+
 			change_curseg(sbi, type);
 			if (curseg->next_blkoff >= BLKS_PER_SEG(sbi)) {
 				printk("seg %d failed to change - %s\n", curseg->segno, __func__);
@@ -3932,13 +3827,6 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 	}
 	*new_blkaddr = NEXT_FREE_BLKADDR(sbi, curseg);
 
-	if (curseg->alloc_type == SSR && ssr_started && GET_SEC_FROM_SEG(sbi, curseg->segno) == cur_block) {
-		sub_cnt[(*new_blkaddr)%4]++;
-		// printk("new_blkaddr = %llu\n", *new_blkaddr);
-		// printk("host_write: block=%llu  0=%d 1=%d 2=%d 3=%d\n",
-		// 	cur_block, sub_cnt[0], sub_cnt[1], sub_cnt[2], sub_cnt[3]);
-	}
-
 	f2fs_bug_on(sbi, curseg->next_blkoff >= BLKS_PER_SEG(sbi));
 
 	f2fs_wait_discard_bio(sbi, *new_blkaddr);
@@ -3992,39 +3880,40 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 				if (need_new_seg(sbi, type))
 					new_curseg(sbi, type, false);
 				else {
-						if (test_opt(sbi, BLOCK_SSR)) {
-							/* SSR 대상 segno가 dev1 영역인지 명확히 검사 후에만
-							 * dev1 로컬 섹션 번호로 변환하고 아래 3줄 실행 */
-							// unsigned int tgt = curseg->next_segno;
-							if (sbi->s_ndevs > 1) {
-								unsigned int start_segno = GET_SEGNO(sbi, FDEV(1).start_blk);
-								unsigned int new_segno = curseg->next_segno;
-								unsigned int old_segno = curseg->segno;
+					if (test_opt(sbi, BLOCK_SSR)) {
+						/* SSR 대상 segno가 dev1 영역인지 명확히 검사 후에만
+							* dev1 로컬 섹션 번호로 변환하고 아래 3줄 실행 */
+						// unsigned int tgt = curseg->next_segno;
+						if (sbi->s_ndevs > 1) {
+							unsigned int start_segno = GET_SEGNO(sbi, FDEV(1).start_blk);
+							unsigned int new_segno = curseg->next_segno;
+							unsigned int old_segno = curseg->segno;
+							bool need_to_signal_device = f2fs_target_device_index(sbi, START_BLOCK(sbi, new_segno)) == 1;
 
-								if (f2fs_target_device_index(sbi, START_BLOCK(sbi, new_segno)) == 1) {
-									ssr_started = true;
-									sbi->ssr_started = true;
-									cur_block = GET_SEC_FROM_SEG(sbi, curseg->next_segno);
-									memset(sub_cnt, 0, sizeof(sub_cnt));
+							setup_new_section_ssr(sbi, curseg, curseg->next_segno, type);
+							if (need_to_signal_device) {
+								memshare_set_bitmap(sbi, type, curseg, curseg->next_segno);
+								f2fs_signal_ssr_start(sbi, curseg, type);
+							}
 
-									setup_new_section_ssr(sbi, curseg, curseg->next_segno, type);
-									f2fs_signal_ssr_start(sbi, curseg, type);
-									find_first_writable_segment(sbi, curseg, type);
+							find_first_writable_segment(sbi, curseg, type);
 
-									
-									printk("[F2FS-SSR] type=%d  %u(%u) => %u(%u)\n", 
-										type, old_segno-start_segno, GET_SEC_FROM_SEG(sbi, old_segno-start_segno), 
-										new_segno-start_segno, GET_SEC_FROM_SEG(sbi, new_segno-start_segno));
-								} else {
-									printk("[LOG-FAILED2] device index not 1, raw_segno=%d\n", new_segno);
-								}
+							if (need_to_signal_device) {
+								printk("[F2FS-SSR] type=%d  %u(%u) => %u(%u)\n", 
+									type, old_segno-start_segno, GET_SEC_FROM_SEG(sbi, old_segno-start_segno), 
+									new_segno-start_segno, GET_SEC_FROM_SEG(sbi, new_segno-start_segno));
+							} else {
+								printk("[F2FS-SSR-DEV0] type=%d  %u(%u) => %u(%u)\n", 
+									type, old_segno, GET_SEC_FROM_SEG(sbi, old_segno), 
+									new_segno, GET_SEC_FROM_SEG(sbi, new_segno));
 							}
 						}
+					}
+
 					change_curseg(sbi, type);
 					if (curseg->next_blkoff >= BLKS_PER_SEG(sbi)) {
 						printk("seg %d failed to change - %s\n", curseg->segno, __func__);
 					}
-
 				}
 			}
 			stat_inc_seg_type(sbi, curseg);
@@ -4284,7 +4173,7 @@ void f2fs_do_replace_block(struct f2fs_sb_info *sbi, struct f2fs_summary *sum,
 	/* change the current segment */
 	if (segno != curseg->segno) {
 		curseg->next_segno = segno;
-		printk("ssr called from replace\n");
+		printk("ssr called from replace 0\n");
 		change_curseg(sbi, type);
 		if (curseg->next_blkoff >= BLKS_PER_SEG(sbi)) {
 			printk("seg %d failed to change - %s\n", curseg->segno, __func__);
@@ -4292,7 +4181,6 @@ void f2fs_do_replace_block(struct f2fs_sb_info *sbi, struct f2fs_summary *sum,
 	}
 
 	curseg->next_blkoff = GET_BLKOFF_FROM_SEG0(sbi, new_blkaddr);
-	printk("curseg changed called from replace seg0\n");
 	curseg->sum_blk->entries[curseg->next_blkoff] = *sum;
 
 	if (!recover_curseg || recover_newaddr) {
@@ -4316,14 +4204,13 @@ void f2fs_do_replace_block(struct f2fs_sb_info *sbi, struct f2fs_summary *sum,
 		if (old_cursegno != curseg->segno) {
 			curseg->next_segno = old_cursegno;
 
-			printk("ssr called from replace 2\n");
+			printk("ssr called from replace 1\n");
 			change_curseg(sbi, type);
 			if (curseg->next_blkoff >= BLKS_PER_SEG(sbi)) {
 				printk("seg %d failed to change - %s\n", curseg->segno, __func__);
 			}
 		}
 		curseg->next_blkoff = old_blkoff;
-		printk("curseg changed called from replace old_blkoff\n");
 		curseg->alloc_type = old_alloc_type;
 	}
 
@@ -4532,7 +4419,6 @@ static int read_normal_summaries(struct f2fs_sb_info *sbi, int type)
 	reset_curseg(sbi, type, 0);
 	curseg->alloc_type = ckpt->alloc_type[type];
 	curseg->next_blkoff = blk_off;
-	printk("curseg changed from normal summary\n");
 	mutex_unlock(&curseg->curseg_mutex);
 out:
 	f2fs_put_page(new, 1);
