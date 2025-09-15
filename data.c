@@ -4252,23 +4252,27 @@ static inline sector_t f2fs_blk_to_sect(struct f2fs_sb_info *sbi, block_t blk)
 	return (sector_t)blk << (F2FS_BLKSIZE_BITS - 9);
 }
 
-void f2fs_signal_ssr_start(struct f2fs_sb_info *sbi,
-                   struct curseg_info *curseg, int type)
+void f2fs_signal_ssr_start(struct f2fs_sb_info *sbi, struct curseg_info *curseg)
 {
 	struct bio *bio;
 	struct page *page;
 	struct block_device *bdev;
-	block_t fs_blk, dev_local_blk;
-	sector_t dev_local_sect;
+	block_t fs_blk, dev_local_blk, ssr_start_blk, ssr_start_local_blk;
+	sector_t dev_local_sect, ssr_start_sect;
+	uint64_t dev1_sec;
+	uint64_t dev1_start_segno;
 
     /* 기본 방어 */
     if (!sbi || !curseg || sbi->s_ndevs < 2)
         return;
     if (!FDEV(1).bdev)
         return;
+    /* SSR 비활성 또는 cursec 미할당 시 안전 종료 */
+    if (!test_opt(sbi, BLOCK_SSR) || !curseg->cursec)
+        return;
 
     /* 장치가 SplitFTL 지원이 없으면 장치 쓰기 신호는 금지 (데이터 손상 방지) */
-    if (!f2fs_sb_has_splitftl(sbi)) {
+    if (!f2fs_sb_has_splitftl(sbi) || !test_opt(sbi, BLOCK_SSR)) {
         return;
 	}
 
@@ -4278,12 +4282,18 @@ void f2fs_signal_ssr_start(struct f2fs_sb_info *sbi,
 	fs_blk = START_BLOCK(sbi, curseg->next_segno);
 
 	/* 2) 디바이스 1 로컬 블록 번호로 변환: 전역에서 start_blk를 빼준다 */
-	if (unlikely(fs_blk < FDEV(1).start_blk))
+	if (unlikely(fs_blk < FDEV(1).start_blk)) {
+		printk("Cannot continue SSR - block address does not belong to 1st device\n");
 		return; /* segno가 디바이스1 영역이 아니면 방어적으로 중단 */
+	}
 
-	dev_local_blk = fs_blk - FDEV(1).start_blk;
-	dev_local_blk = (dev_local_blk >> 13) << 13;
-	dev_local_blk += type;
+	ssr_start_local_blk = FDEV(1).total_segments << sbi->log_blocks_per_seg;
+
+    {
+        uint64_t global_sec = GET_SEC_FROM_SEG(sbi, curseg->next_segno);
+        uint64_t dev1_base_sec = GET_SEC_FROM_SEG(sbi, GET_SEGNO(sbi, FDEV(1).start_blk));
+        dev1_sec = global_sec - dev1_base_sec;
+    } 
 
 
 	/* 선택적으로: 범위 체크 (디바이스1 블록 범위를 벗어나면 중단) */
@@ -4293,26 +4303,27 @@ void f2fs_signal_ssr_start(struct f2fs_sb_info *sbi,
 #endif
 
 	/* 3) 섹터 단위로 변환하고 type을 lower part에 인코딩 */
-	dev_local_sect = f2fs_blk_to_sect(sbi, dev_local_blk);
-	// printk("local sect %llu\n", dev_local_sect);
-	/* rw command = block_id + type (type in lower part) */
-	// dev_local_sect = (dev_local_sect & ~0x7ULL) | (type & 0x7);
-
+	
+	ssr_start_sect = SECTOR_FROM_BLOCK(ssr_start_local_blk);
+	
 	page = alloc_page(GFP_NOFS);
 	if (!page)
 		return;
 
 	zero_user_segment(page, 0, PAGE_SIZE);
-	memset(page_address(page), 0xAA, 8); /* 간단한 시그니처 */
 
-	bio = bio_alloc(bdev, 1, REQ_OP_WRITE | REQ_SYNC | REQ_SSR_SIGNAL, GFP_NOFS);
+	memcpy(page_address(page), &dev1_sec, sizeof(dev1_sec));
+	memcpy(page_address(page)+sizeof(dev1_sec), curseg->cursec->valid_map,
+	       sizeof(curseg->cursec->valid_map));
+
+	bio = bio_alloc(bdev, 1, REQ_OP_WRITE | REQ_SYNC, GFP_NOFS);
 	if (!bio) {
 		__free_page(page);
 		return;
 	}
 
 	/* 디바이스 1의 로컬 섹터 주소로 지정 */
-	bio->bi_iter.bi_sector = dev_local_sect;
+	bio->bi_iter.bi_sector = ssr_start_sect;
 
 	/* 한 페이지만 실어서 전송 (크기 매크로가 있다면 min 처리) */
 	if (bio_add_page(bio, page, min_t(unsigned int, PAGE_SIZE, F2FS_SSR_SIGNAL_SIZE), 0) == 0) {
@@ -4322,8 +4333,8 @@ void f2fs_signal_ssr_start(struct f2fs_sb_info *sbi,
 	}
 
 	submit_bio_wait(bio);
-	// printk("signal_ssr: sent signal bio to dev1 @sect=%llu\n",
-	//        (unsigned long long)dev_local_sect);
+	printk("signal_ssr: sent signal bio to dev1 @sect=%llu. seg = %llu (%d)    ssr block = %llu\n",
+	       (unsigned long long)ssr_start_sect, ssr_start_sect/8/512, ssr_start_sect/8/512/16, dev1_sec);
 
 	bio_put(bio);
 	__free_page(page);

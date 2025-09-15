@@ -93,7 +93,7 @@ void memshare_set_bitmap(struct f2fs_sb_info *sbi, int type, struct curseg_info 
     int total = 0;
 
     for (i = 0; i < 8192; i++) {
-        if (f2fs_test_bit(i, curseg->cursec->valid_map[type])) 
+        if (f2fs_test_bit(i, curseg->cursec->valid_map)) 
             total++;
     }
 
@@ -157,7 +157,7 @@ void memshare_set_bitmap(struct f2fs_sb_info *sbi, int type, struct curseg_info 
     smp_wmb();  
 
     /* 공유 버퍼 전체를 채움: valid_map 크기와 동일(1KB) */
-    memcpy(ps->data[type], curseg->cursec->valid_map[type], F2FS_SSR_PAYLOAD);
+    memcpy(ps->data[type], curseg->cursec->valid_map, F2FS_SSR_PAYLOAD);
 
 //     /* 2) 섹션 내 각 세그먼트의 (ckpt_valid_map OR cur_valid_map)만 수집 */
 //     for (i = first_seg; i < next_sec_seg; i++) {

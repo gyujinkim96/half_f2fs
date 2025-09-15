@@ -3075,7 +3075,7 @@ static int f2fs_find_next_ssr_block(struct f2fs_sb_info *sbi,
 	if (test_opt(sbi, BLOCK_SSR) && seg->cursec->section_ssr) {
 		int sec = GET_SEC_FROM_SEG(sbi, segno);
 		int first_seg = GET_SEG_FROM_SEC(sbi, sec);
-		unsigned long *start = (unsigned long *)seg->cursec->valid_map[type] + BIT_WORD((segno - first_seg) * BLKS_PER_SEG(sbi));
+		unsigned long *start = (unsigned long *)seg->cursec->valid_map + BIT_WORD((segno - first_seg) * BLKS_PER_SEG(sbi));
 		uint64_t ret = __find_rev_next_zero_bit(start, BLKS_PER_SEG(sbi), next_blkoff);
 
 		return ret;
@@ -3339,7 +3339,7 @@ static void setup_new_section_ssr(struct f2fs_sb_info *sbi, struct curseg_info *
 		return;
 
 
-	memset(curseg->cursec->valid_map[type], 0, 1024);
+	memset(curseg->cursec->valid_map, 0, sizeof(curseg->cursec->valid_map));
 
 	for (idx = 0; idx < segs_per_sec; idx++) {
 		unsigned int s          = base_segno + idx;
@@ -3349,7 +3349,7 @@ static void setup_new_section_ssr(struct f2fs_sb_info *sbi, struct curseg_info *
 		for (i = 0; i < BLKS_PER_SEG(sbi); i++) {
 			int offset = BLKS_PER_SEG(sbi) * idx + i;
 			if (f2fs_test_bit(i, se->ckpt_valid_map) || f2fs_test_bit(i, se->cur_valid_map)) {
-				f2fs_set_bit(offset, curseg->cursec->valid_map[type]);
+				f2fs_set_bit(offset, curseg->cursec->valid_map);
 				non_valids++;
 			} else {
 				invalids++;
@@ -3390,8 +3390,7 @@ void f2fs_allocate_segment_for_resize(struct f2fs_sb_info *sbi, int type,
 
 					setup_new_section_ssr(sbi, curseg, curseg->next_segno, type);
 					if (need_to_signal_device) {
-						memshare_set_bitmap(sbi, type, curseg, curseg->next_segno);
-						f2fs_signal_ssr_start(sbi, curseg, type);
+						f2fs_signal_ssr_start(sbi, curseg);
 					}
 
 					find_first_writable_segment(sbi, curseg, type);
@@ -3872,8 +3871,7 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 
 							setup_new_section_ssr(sbi, curseg, curseg->next_segno, type);
 							if (need_to_signal_device) {
-								memshare_set_bitmap(sbi, type, curseg, curseg->next_segno);
-								f2fs_signal_ssr_start(sbi, curseg, type);
+								f2fs_signal_ssr_start(sbi, curseg);
 							}
 
 							find_first_writable_segment(sbi, curseg, type);

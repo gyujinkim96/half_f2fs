@@ -291,7 +291,7 @@ struct dirty_seglist_info {
 
 struct cursec_info {
 	bool section_ssr;
-	unsigned char valid_map[SHARING_LOGS][F2FS_SSR_PAYLOAD] __aligned(sizeof(unsigned long));
+	unsigned char valid_map[F2FS_SSR_PAYLOAD] __aligned(sizeof(unsigned long));
 };
 
 /* for active log information */

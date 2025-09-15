@@ -4383,11 +4383,6 @@ static void f2fs_tuning_parameters(struct f2fs_sb_info *sbi)
 	sbi->readdir_ra = true;
 }
 
-/* mem_share helpers */
-int f2fs_memshare_get(void);
-void f2fs_memshare_put(void);
-void setup_new_section_ssr(struct f2fs_sb_info *sbi, struct curseg_info *curseg, unsigned int segno,  int type);
-
 static int f2fs_fill_super(struct super_block *sb, void *data, int silent)
 {
 	struct f2fs_sb_info *sbi;
@@ -4847,31 +4842,18 @@ reset_checkpoint:
 	f2fs_update_time(sbi, REQ_TIME);
 	clear_sbi_flag(sbi, SBI_CP_DISABLED_QUICK);
 
-	err = f2fs_memshare_get();
-    if (err) {
-        f2fs_err(sbi, "memshare init failed: %d", err);
-        goto sync_free_meta;
-    }	
-
-	// printk("called from super\n");
-	// memshare_set_bitmap_test(sbi, 0, 400);
-	// memshare_set_bitmap_test(sbi, 1, 100);
-	// memshare_set_bitmap_test(sbi, 2, 200);
-	// memshare_set_bitmap_test(sbi, 3, 300);
-	// memshare_set_bitmap_test(sbi, 4, 800);
-	// memshare_set_bitmap_test(sbi, 5, 500);
-
-	// {
-	// 	int tmp = seg_i->next_segno;
-	// 	seg_i->next_segno = 400;
-	// 	setup_new_section_ssr(sbi, seg_i, seg_i->next_segno, 4);
-	// 	f2fs_signal_ssr_start(sbi, seg_i, 4);
+	// seg_i->next_segno = 400;
+	// f2fs_signal_ssr_start(sbi, seg_i);
 		
+	// {
+		
+	// 	printk("local blk = %d\n", ((FDEV(1).end_blk + 1) >> sbi->log_blocks_per_seg));
+	// 	printk("local blk = %d\n", ((FDEV(1).total_segments - 16)));
 
-	// 	seg_i->next_segno = tmp;
-
+	// 	seg_i->next_segno = 400;
+	// 	f2fs_signal_ssr_start(sbi, seg_i);
 	// }
-
+	
 	return 0;
 
 sync_free_meta:
@@ -5001,8 +4983,7 @@ static void kill_f2fs_super(struct super_block *sb)
 		if (is_sbi_flag_set(sbi, SBI_IS_RECOVERED) && f2fs_readonly(sb))
 			sb->s_flags &= ~SB_RDONLY;
 	}
-	/* balance mem_share reference from mount */
-	f2fs_memshare_put();
+
 	kill_block_super(sb);
 	/* Release block devices last, after fscrypt_destroy_keyring(). */
 	if (sbi) {
