@@ -4260,9 +4260,15 @@ void f2fs_signal_ssr_start(struct f2fs_sb_info *sbi, struct curseg_info *curseg)
 	block_t fs_blk, ssr_start_local_blk;
 	sector_t ssr_start_sect;
 	uint64_t dev1_sec;
-	size_t map_bytes, max_payload, payload_bytes;
-	static bool warned_payload_truncation;
 	int ret;
+	int idx;
+	int i;
+	unsigned int secno        = GET_SEC_FROM_SEG(sbi, curseg->next_segno);
+	unsigned int base_segno   = GET_SEG_FROM_SEC(sbi, secno);
+	unsigned long *target_map;
+	unsigned long *ckpt_map;
+	unsigned long *cur_map;
+	int entries = SIT_VBLOCK_MAP_SIZE / sizeof(unsigned long);
 
     /* 기본 방어 */
     if (!sbi || !curseg || sbi->s_ndevs < 2)
@@ -4270,12 +4276,11 @@ void f2fs_signal_ssr_start(struct f2fs_sb_info *sbi, struct curseg_info *curseg)
     if (!FDEV(1).bdev)
         return;
 	/* SSR 비활성 또는 cursec 미할당 시 안전 종료 */
-    if (!test_opt(sbi, BLOCK_SSR) || !curseg->cursec ||
-        !curseg->cursec->valid_map)
+    if (!test_opt(sbi, BLOCK_SSR) || !curseg->cursec)
         return;
 
     /* 장치가 SplitFTL 지원이 없으면 장치 쓰기 신호는 금지 (데이터 손상 방지) */
-    if (!f2fs_sb_has_splitftl(sbi) || !test_opt(sbi, BLOCK_SSR)) {
+    if (!f2fs_sb_has_splitftl(sbi)) {
         return;
 	}
 
@@ -4288,17 +4293,6 @@ void f2fs_signal_ssr_start(struct f2fs_sb_info *sbi, struct curseg_info *curseg)
 	if (unlikely(fs_blk < FDEV(1).start_blk)) {
 		printk("Cannot continue SSR - block address does not belong to 1st device\n");
 		return; /* segno가 디바이스1 영역이 아니면 방어적으로 중단 */
-	}
-
-	map_bytes = curseg->cursec->valid_map_bytes;
-	max_payload = 0;
-	if (F2FS_SSR_SIGNAL_SIZE > sizeof(dev1_sec))
-		max_payload = F2FS_SSR_SIGNAL_SIZE - sizeof(dev1_sec);
-	payload_bytes = min_t(size_t, map_bytes, max_payload);
-
-	if (unlikely(map_bytes > max_payload && !warned_payload_truncation)) {
-		f2fs_warn(sbi, "SSR payload truncated from %zu to %zu bytes", map_bytes, max_payload);
-		warned_payload_truncation = true;
 	}
 
 	ssr_start_local_blk = FDEV(1).total_segments << sbi->log_blocks_per_seg;
@@ -4330,9 +4324,21 @@ void f2fs_signal_ssr_start(struct f2fs_sb_info *sbi, struct curseg_info *curseg)
 	zero_user_segment(page, 0, PAGE_SIZE);
 
 	memcpy(page_address(page), &dev1_sec, sizeof(dev1_sec));
-	if (payload_bytes)
-		memcpy(page_address(page) + sizeof(dev1_sec), curseg->cursec->valid_map,
-		       payload_bytes);
+
+	for (idx = 0; idx < SEGS_PER_SEC(sbi); idx++) {
+		unsigned int s = base_segno + idx;
+		struct seg_entry *se = get_seg_entry(sbi, s);
+
+		target_map = SIT_I(sbi)->tmp_map;
+		ckpt_map = (unsigned long *)se->ckpt_valid_map;
+		cur_map = (unsigned long *)se->cur_valid_map;
+
+		for (i = 0; i < entries; i++)
+			target_map[i] = ckpt_map[i] | cur_map[i];
+
+		memcpy(page_address(page) + sizeof(dev1_sec) + SIT_VBLOCK_MAP_SIZE * idx,
+			target_map, SIT_VBLOCK_MAP_SIZE);
+	}
 
 	bio = bio_alloc(bdev, 1, REQ_OP_WRITE | REQ_SYNC, GFP_NOFS);
 	if (!bio) {

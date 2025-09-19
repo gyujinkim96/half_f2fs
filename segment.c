@@ -17,6 +17,7 @@
 #include <linux/freezer.h>
 #include <linux/sched/signal.h>
 #include <linux/random.h>
+#include <linux/bitops.h> 
 
 #include "f2fs.h"
 #include "segment.h"
@@ -2955,9 +2956,8 @@ static unsigned int __get_next_segno(struct f2fs_sb_info *sbi, int type)
 }
 
 static void change_curseg(struct f2fs_sb_info *sbi, int type);
-
-static int f2fs_find_next_ssr_block(struct f2fs_sb_info *sbi,
-		struct curseg_info *seg, int segno, int type, unsigned short next_blkoff);
+static int __next_free_blkoff(struct f2fs_sb_info *sbi,
+					int segno, block_t start);
 
 static void find_first_writable_segment(struct f2fs_sb_info *sbi, struct curseg_info *curseg, int type) {
 	unsigned int cur_sec = GET_SEC_FROM_SEG(sbi, curseg->next_segno);
@@ -2968,14 +2968,13 @@ static void find_first_writable_segment(struct f2fs_sb_info *sbi, struct curseg_
 		return;
 	}
 
-	if (!curseg->cursec || !curseg->cursec->valid_map ||
-	    !curseg->cursec->section_ssr) {
+	if (!curseg->cursec || !curseg->cursec->section_ssr) {
 		return;
 	}
 	
 	/* 같은 섹션 내부에서만 스캔 */
 	while (next < end) {
-		if (f2fs_find_next_ssr_block(sbi, curseg, next, type, 0) < f2fs_usable_blks_in_seg(sbi, next)) {
+		if (__next_free_blkoff(sbi, next, 0) < f2fs_usable_blks_in_seg(sbi, next)) {
 			curseg->next_segno = next;
 			break;
 		}
@@ -3000,14 +2999,17 @@ static bool use_seg_from_section_ssr(struct f2fs_sb_info *sbi, struct curseg_inf
 		goto finished;
 	}
 
-	if (!curseg->cursec || !curseg->cursec->valid_map ||
-	    !curseg->cursec->section_ssr) {
+	if (!curseg->cursec || !curseg->cursec->section_ssr) {
+		goto finished;
+	}
+
+	if (curseg->cursec->invalid_cnt == 0) {
 		goto finished;
 	}
 	
 	/* 같은 섹션 내부에서만 스캔 */
 	while (next < end) {
-		if (f2fs_find_next_ssr_block(sbi, curseg, next, type, 0) < f2fs_usable_blks_in_seg(sbi, next)) {
+		if (__next_free_blkoff(sbi, next, 0) < f2fs_usable_blks_in_seg(sbi, next)) {
 			curseg->next_segno = next;
 			advanced = true;
 			break;
@@ -3016,10 +3018,12 @@ static bool use_seg_from_section_ssr(struct f2fs_sb_info *sbi, struct curseg_inf
 		next++;
 	}
 
-	if (!advanced)
-		curseg->cursec->section_ssr = false;
-
 	finished:
+
+	if (!advanced && curseg->cursec) {
+		curseg->cursec->section_ssr = false;
+	}
+
 	return advanced;
 }
 
@@ -3070,31 +3074,6 @@ static int __next_free_blkoff(struct f2fs_sb_info *sbi,
 	return __find_rev_next_zero_bit(target_map, BLKS_PER_SEG(sbi), start);
 }
 
-static int f2fs_find_next_ssr_block(struct f2fs_sb_info *sbi,
-		struct curseg_info *seg, int segno, int type, unsigned short next_blkoff)
-{
-	if (test_opt(sbi, BLOCK_SSR) && seg->cursec && seg->cursec->valid_map &&
-	    seg->cursec->section_ssr) {
-		int sec = GET_SEC_FROM_SEG(sbi, segno);
-		int first_seg = GET_SEG_FROM_SEC(sbi, sec);
-		size_t words = seg->cursec->valid_map_bytes / sizeof(unsigned long);
-		size_t word_idx;
-		unsigned long *start;
-
-		if (!words)
-			return __next_free_blkoff(sbi, segno, next_blkoff);
-
-		word_idx = BIT_WORD((segno - first_seg) * BLKS_PER_SEG(sbi));
-		if (WARN_ON_ONCE(word_idx >= words))
-			return __next_free_blkoff(sbi, segno, next_blkoff);
-
-		start = seg->cursec->valid_map + word_idx;
-		return __find_rev_next_zero_bit(start, BLKS_PER_SEG(sbi), next_blkoff);
-	}
-
-	return __next_free_blkoff(sbi, segno, next_blkoff);
-}
-
 bool f2fs_segment_has_free_slot(struct f2fs_sb_info *sbi, int segno)
 {
 	return __next_free_blkoff(sbi, segno, 0) < BLKS_PER_SEG(sbi);
@@ -3141,7 +3120,7 @@ static void change_curseg(struct f2fs_sb_info *sbi, int type)
 
 	reset_curseg(sbi, type, 1);
 	curseg->alloc_type = SSR;
-	curseg->next_blkoff = f2fs_find_next_ssr_block(sbi, curseg, curseg->segno, type, 0);
+	curseg->next_blkoff = __next_free_blkoff(sbi, curseg->segno, 0);
 
 	sum_page = f2fs_get_sum_page(sbi, new_segno);
 	if (IS_ERR(sum_page)) {
@@ -3339,35 +3318,30 @@ static void setup_new_section_ssr(struct f2fs_sb_info *sbi, struct curseg_info *
 	unsigned int base_segno   = GET_SEG_FROM_SEC(sbi, secno);
 	unsigned int segs_per_sec = SEGS_PER_SEC(sbi);
 	unsigned int idx;
-	unsigned char *valid_map;
-	unsigned int max_bits;
+	int entries = SIT_VBLOCK_MAP_SIZE / sizeof(unsigned long);
+	int total = 0;
 
-	if (!test_opt(sbi, BLOCK_SSR) || !curseg->cursec ||
-	    !curseg->cursec->valid_map)
+	if (!test_opt(sbi, BLOCK_SSR) || !curseg->cursec)
 		return;
-
-	valid_map = (unsigned char *)curseg->cursec->valid_map;
-	memset(valid_map, 0, curseg->cursec->valid_map_bytes);
-	max_bits = curseg->cursec->valid_map_bytes * BITS_PER_BYTE;
 
 	for (idx = 0; idx < segs_per_sec; idx++) {
 		unsigned int s = base_segno + idx;
 		struct seg_entry *se = get_seg_entry(sbi, s);
 		int i;
 
-		for (i = 0; i < BLKS_PER_SEG(sbi); i++) {
-			int offset = BLKS_PER_SEG(sbi) * idx + i;
+		unsigned long *target_map = SIT_I(sbi)->tmp_map;
+		unsigned long *ckpt_map = (unsigned long *)se->ckpt_valid_map;
+		unsigned long *cur_map = (unsigned long *)se->cur_valid_map;
 
-			if (WARN_ON_ONCE(offset >= max_bits))
-				return;
+		for (i = 0; i < entries; i++)
+			target_map[i] = ckpt_map[i] | cur_map[i];
 
-			if (f2fs_test_bit(i, se->ckpt_valid_map) ||
-			    f2fs_test_bit(i, se->cur_valid_map))
-				f2fs_set_bit(offset, valid_map);
-		}
+		for (i = 0; i < entries; i++)
+			total += hweight_long(~target_map[i]);
 	}
 
 	curseg->cursec->section_ssr = true;
+	curseg->cursec->invalid_cnt = total;
 	sbi->ssr_started = true;
 	ssr_started = true;
 }
@@ -3820,9 +3794,13 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 
 	f2fs_wait_discard_bio(sbi, *new_blkaddr);
 
+	if (test_opt(sbi, BLOCK_SSR) && curseg->cursec && curseg->cursec->section_ssr) {
+		curseg->cursec->invalid_cnt--;
+	}
+
 	curseg->sum_blk->entries[curseg->next_blkoff] = *sum;
 	if (curseg->alloc_type == SSR) {
-		curseg->next_blkoff = f2fs_find_next_ssr_block(sbi, curseg, curseg->segno, type, curseg->next_blkoff+1);
+		curseg->next_blkoff = __next_free_blkoff(sbi, curseg->segno, curseg->next_blkoff+1);
 	} else {
 		curseg->next_blkoff++;
 		if (F2FS_OPTION(sbi).fs_mode == FS_MODE_FRAGMENT_BLK)
@@ -3831,6 +3809,12 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 
 	if (curseg->next_blkoff >= f2fs_usable_blks_in_seg(sbi, curseg->segno))
 		segment_full = true;
+
+	if (test_opt(sbi, BLOCK_SSR) && curseg->cursec && curseg->cursec->section_ssr &&
+			curseg->cursec->invalid_cnt == 0) {
+		segment_full = true;
+	}
+	
 	stat_inc_block_count(sbi, curseg);
 
 	if (from_gc) {
@@ -3864,7 +3848,6 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 			get_atssr_segment(sbi, type, se->type,
 						AT_SSR, se->mtime);
 		} else {
-
 			if (!use_seg_from_section_ssr(sbi, curseg, type)) {
 				if (need_new_seg(sbi, type))
 					new_curseg(sbi, type, false);
@@ -4951,24 +4934,11 @@ static int build_curseg(struct f2fs_sb_info *sbi)
 			array[i].seg_type = CURSEG_HOT_DATA + i;
 
 			if (test_opt(sbi, BLOCK_SSR)) {
-				size_t map_bits = (size_t)SEGS_PER_SEC(sbi) * BLKS_PER_SEG(sbi);
-				size_t map_bytes = f2fs_bitmap_size(map_bits);
-
 				array[i].cursec = f2fs_kzalloc(sbi, sizeof(struct cursec_info), GFP_KERNEL);
 				if (!array[i].cursec)
 					return -ENOMEM;
 
-				array[i].cursec->valid_map_bytes = map_bytes;
-				if (map_bytes) {
-					array[i].cursec->valid_map = f2fs_kvzalloc(sbi, map_bytes, GFP_KERNEL);
-					if (!array[i].cursec->valid_map) {
-						kfree(array[i].cursec);
-						array[i].cursec = NULL;
-						return -ENOMEM;
-					}
-				} else {
-					array[i].cursec->valid_map = NULL;
-				}
+				array[i].cursec->invalid_cnt = 0;
 				array[i].cursec->section_ssr = false;
 			} else {
 				array[i].cursec = NULL;
@@ -5793,8 +5763,6 @@ static void destroy_curseg(struct f2fs_sb_info *sbi)
 		kfree(array[i].journal);
 
 		if (array[i].cursec) {
-			kvfree(array[i].cursec->valid_map);
-			array[i].cursec->valid_map = NULL;
 			kfree(array[i].cursec);
 			array[i].cursec = NULL;
 		}

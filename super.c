@@ -4632,6 +4632,23 @@ try_onemore:
 			le64_to_cpu(seg_i->journal->info.kbytes_written);
 
 
+	if (test_opt(sbi, BLOCK_SSR)) {
+		for (i = 0; i < NR_CURSEG_DATA_TYPE; i++) {
+			u32 invalid_left;
+			bool section_ssr;
+			struct curseg_info *curseg = CURSEG_I(sbi, i + CURSEG_HOT_DATA);
+			size_t off = i * (sizeof(invalid_left) + sizeof(bool));
+
+			memcpy(&invalid_left, seg_i->journal->info.reserved + off, sizeof(__le32));
+			invalid_left = le32_to_cpu((__le32)invalid_left);
+			section_ssr = seg_i->journal->info.reserved[off + sizeof(__le32)] != 0;
+
+			curseg->cursec->section_ssr = section_ssr;
+			curseg->cursec->invalid_cnt = invalid_left;
+		}
+	}
+
+
 	f2fs_build_gc_manager(sbi);
 
 	err = f2fs_build_stats(sbi);
@@ -4796,18 +4813,6 @@ reset_checkpoint:
 	f2fs_update_time(sbi, CP_TIME);
 	f2fs_update_time(sbi, REQ_TIME);
 	clear_sbi_flag(sbi, SBI_CP_DISABLED_QUICK);
-
-	// seg_i->next_segno = 400;
-	// f2fs_signal_ssr_start(sbi, seg_i);
-		
-	// {
-		
-	// 	printk("local blk = %d\n", ((FDEV(1).end_blk + 1) >> sbi->log_blocks_per_seg));
-	// 	printk("local blk = %d\n", ((FDEV(1).total_segments - 16)));
-
-	// 	seg_i->next_segno = 400;
-	// 	f2fs_signal_ssr_start(sbi, seg_i);
-	// }
 	
 	return 0;
 

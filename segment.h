@@ -290,8 +290,7 @@ struct dirty_seglist_info {
 
 struct cursec_info {
 	bool section_ssr;
-	size_t valid_map_bytes;
-	unsigned long *valid_map;
+	int invalid_cnt;
 };
 
 

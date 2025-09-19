@@ -1463,7 +1463,7 @@ static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	int i;
 	int cp_payload_blks = __cp_payload(sbi);
 	struct curseg_info *seg_i = CURSEG_I(sbi, CURSEG_HOT_NODE);
-	// struct curseg_info *warm_node_seg_i = CURSEG_I(sbi, CURSEG_WARM_NODE);
+	struct curseg_info *warm_node_seg_i = CURSEG_I(sbi, CURSEG_WARM_NODE);
 	// struct curseg_info *cold_node_seg_i = CURSEG_I(sbi, CURSEG_COLD_NODE);
 	u64 kbytes_written;
 	int err;
@@ -1560,6 +1560,25 @@ static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	kbytes_written += (f2fs_get_sectors_written(sbi) -
 				sbi->sectors_written_start) >> 1;
 	seg_i->journal->info.kbytes_written = cpu_to_le64(kbytes_written);
+
+	if (test_opt(sbi, BLOCK_SSR)) {
+		for (i = 0; i < NR_CURSEG_DATA_TYPE; i++) {
+			int invalid_left = 0;
+			bool section_ssr = false;
+			struct curseg_info *curseg = CURSEG_I(sbi, i + CURSEG_HOT_DATA);
+			__le32 v;
+
+			if (curseg->cursec && curseg->cursec->section_ssr) {
+				invalid_left = curseg->cursec->invalid_cnt;
+				section_ssr = true;
+			}
+
+			v = cpu_to_le32((u32)invalid_left);
+			size_t off = i * (sizeof(v) + sizeof(bool));
+			memcpy(seg_i->journal->info.reserved + off, &v, sizeof(v)); 
+			seg_i->journal->info.reserved[off+sizeof(v)] = section_ssr ? 1 : 0;
+		}
+	}
 
 	f2fs_write_node_summaries(sbi, start_blk);
 	start_blk += NR_CURSEG_NODE_TYPE;
