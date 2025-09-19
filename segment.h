@@ -7,7 +7,6 @@
  */
 #include <linux/blkdev.h>
 #include <linux/backing-dev.h>
-#include "mem_share.h"
 
 /* constant macro */
 #define NULL_SEGNO			((unsigned int)(~0))
@@ -291,8 +290,10 @@ struct dirty_seglist_info {
 
 struct cursec_info {
 	bool section_ssr;
-	unsigned char valid_map[F2FS_SSR_PAYLOAD] __aligned(sizeof(unsigned long));
+	size_t valid_map_bytes;
+	unsigned long *valid_map;
 };
+
 
 /* for active log information */
 struct curseg_info {

@@ -19,7 +19,6 @@
 #include "node.h"
 #include "segment.h"
 #include "iostat.h"
-#include "mem_share.h"
 #include <trace/events/f2fs.h>
 
 #define DEFAULT_CHECKPOINT_IOPRIO (IOPRIO_PRIO_VALUE(IOPRIO_CLASS_BE, 3))
@@ -1562,53 +1561,8 @@ static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 				sbi->sectors_written_start) >> 1;
 	seg_i->journal->info.kbytes_written = cpu_to_le64(kbytes_written);
 
-	// if (warm_node_seg_i->cursec) {
-	// 	u8 *resv = warm_node_seg_i->journal->info.reserved;
-	// 	const size_t stride = 1 + F2FS_SSR_PAYLOAD;
-	// 	const size_t resv_len = EXTRA_INFO_RESERVED;
-
-	// 	for (i = 0; i < SHARING_LOGS/2; i++) {
-	// 		struct curseg_info *cur_seg = CURSEG_I(sbi, i);
-	// 		size_t idx = (size_t)i * stride;
-
-	// 		if (idx >= resv_len)
-	// 			break; /* out-of-bound guard */
-
-	// 		if (cur_seg->cursec) {
-	// 			/* section_ssr flag (1 byte) */
-	// 			resv[idx] = cur_seg->cursec->section_ssr ? 1 : 0;
-
-	// 			if (!cur_seg->cursec->section_ssr)
-	// 				continue;
-
-	// 			memcpy(resv+idx+1, cur_seg->cursec->valid_map[i], F2FS_SSR_PAYLOAD);
-	// 		}
-	// 	}
-
-	// 	resv = cold_node_seg_i->journal->info.reserved;
-	// 	for (i = SHARING_LOGS/2; i < SHARING_LOGS; i++) {
-	// 		struct curseg_info *cur_seg = CURSEG_I(sbi, i);
-	// 		size_t idx = (size_t)i * stride;
-
-	// 		if (idx >= resv_len)
-	// 			break; /* out-of-bound guard */
-
-	// 		if (cur_seg->cursec) {
-	// 			/* section_ssr flag (1 byte) */
-	// 			resv[idx] = cur_seg->cursec->section_ssr ? 1 : 0;
-
-	// 			if (!cur_seg->cursec->section_ssr)
-	// 				continue;
-
-	// 			memcpy(resv+idx+1, cur_seg->cursec->valid_map[i], F2FS_SSR_PAYLOAD);
-	// 		}
-	// 	}
-	// }
-	
-	// if (__remain_node_summaries(cpc->reason)) {
 	f2fs_write_node_summaries(sbi, start_blk);
 	start_blk += NR_CURSEG_NODE_TYPE;
-	// }
 
 	/* Here, we have one bio having CP pack except cp pack 2 page */
 	f2fs_sync_meta_pages(sbi, META, LONG_MAX, FS_CP_META_IO);

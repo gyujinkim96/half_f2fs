@@ -4257,18 +4257,21 @@ void f2fs_signal_ssr_start(struct f2fs_sb_info *sbi, struct curseg_info *curseg)
 	struct bio *bio;
 	struct page *page;
 	struct block_device *bdev;
-	block_t fs_blk, dev_local_blk, ssr_start_blk, ssr_start_local_blk;
-	sector_t dev_local_sect, ssr_start_sect;
+	block_t fs_blk, ssr_start_local_blk;
+	sector_t ssr_start_sect;
 	uint64_t dev1_sec;
-	uint64_t dev1_start_segno;
+	size_t map_bytes, max_payload, payload_bytes;
+	static bool warned_payload_truncation;
+	int ret;
 
     /* 기본 방어 */
     if (!sbi || !curseg || sbi->s_ndevs < 2)
         return;
     if (!FDEV(1).bdev)
         return;
-    /* SSR 비활성 또는 cursec 미할당 시 안전 종료 */
-    if (!test_opt(sbi, BLOCK_SSR) || !curseg->cursec)
+	/* SSR 비활성 또는 cursec 미할당 시 안전 종료 */
+    if (!test_opt(sbi, BLOCK_SSR) || !curseg->cursec ||
+        !curseg->cursec->valid_map)
         return;
 
     /* 장치가 SplitFTL 지원이 없으면 장치 쓰기 신호는 금지 (데이터 손상 방지) */
@@ -4287,6 +4290,17 @@ void f2fs_signal_ssr_start(struct f2fs_sb_info *sbi, struct curseg_info *curseg)
 		return; /* segno가 디바이스1 영역이 아니면 방어적으로 중단 */
 	}
 
+	map_bytes = curseg->cursec->valid_map_bytes;
+	max_payload = 0;
+	if (F2FS_SSR_SIGNAL_SIZE > sizeof(dev1_sec))
+		max_payload = F2FS_SSR_SIGNAL_SIZE - sizeof(dev1_sec);
+	payload_bytes = min_t(size_t, map_bytes, max_payload);
+
+	if (unlikely(map_bytes > max_payload && !warned_payload_truncation)) {
+		f2fs_warn(sbi, "SSR payload truncated from %zu to %zu bytes", map_bytes, max_payload);
+		warned_payload_truncation = true;
+	}
+
 	ssr_start_local_blk = FDEV(1).total_segments << sbi->log_blocks_per_seg;
 
     {
@@ -4294,6 +4308,9 @@ void f2fs_signal_ssr_start(struct f2fs_sb_info *sbi, struct curseg_info *curseg)
         uint64_t dev1_base_sec = GET_SEC_FROM_SEG(sbi, GET_SEGNO(sbi, FDEV(1).start_blk));
         dev1_sec = global_sec - dev1_base_sec;
     } 
+
+	WARN_ON_ONCE(ssr_start_local_blk < FDEV(1).start_blk);
+	WARN_ON_ONCE(FDEV(1).end_blk && ssr_start_local_blk >= FDEV(1).end_blk);
 
 
 	/* 선택적으로: 범위 체크 (디바이스1 블록 범위를 벗어나면 중단) */
@@ -4313,8 +4330,9 @@ void f2fs_signal_ssr_start(struct f2fs_sb_info *sbi, struct curseg_info *curseg)
 	zero_user_segment(page, 0, PAGE_SIZE);
 
 	memcpy(page_address(page), &dev1_sec, sizeof(dev1_sec));
-	memcpy(page_address(page)+sizeof(dev1_sec), curseg->cursec->valid_map,
-	       sizeof(curseg->cursec->valid_map));
+	if (payload_bytes)
+		memcpy(page_address(page) + sizeof(dev1_sec), curseg->cursec->valid_map,
+		       payload_bytes);
 
 	bio = bio_alloc(bdev, 1, REQ_OP_WRITE | REQ_SYNC, GFP_NOFS);
 	if (!bio) {
@@ -4325,16 +4343,20 @@ void f2fs_signal_ssr_start(struct f2fs_sb_info *sbi, struct curseg_info *curseg)
 	/* 디바이스 1의 로컬 섹터 주소로 지정 */
 	bio->bi_iter.bi_sector = ssr_start_sect;
 
-	/* 한 페이지만 실어서 전송 (크기 매크로가 있다면 min 처리) */
-	if (bio_add_page(bio, page, min_t(unsigned int, PAGE_SIZE, F2FS_SSR_SIGNAL_SIZE), 0) == 0) {
+	/* 한 페이지만 실어서 전송 */
+	if (bio_add_page(bio, page,
+		min_t(unsigned int, PAGE_SIZE, F2FS_SSR_SIGNAL_SIZE), 0) == 0) {
 		bio_put(bio);
 		__free_page(page);
 		return;
 	}
 
-	submit_bio_wait(bio);
-	printk("signal_ssr: sent signal bio to dev1 @sect=%llu. seg = %llu (%d)    ssr block = %llu\n",
-	       (unsigned long long)ssr_start_sect, ssr_start_sect/8/512, ssr_start_sect/8/512/16, dev1_sec);
+	ret = submit_bio_wait(bio);
+	if (ret)
+		f2fs_err(sbi, "SSR signal bio failed: %d sector=%llu",
+			 ret, (unsigned long long)ssr_start_sect);
+	// printk("signl_ssr: sent signal bio to dev1 @sect=%llu. seg = %llu (%d)    ssr block = %llu\n",
+	//        (unsiganed long long)ssr_start_sect, ssr_start_sect/8/512, ssr_start_sect/8/512/16, dev1_sec);
 
 	bio_put(bio);
 	__free_page(page);

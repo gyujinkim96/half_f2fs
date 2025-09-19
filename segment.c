@@ -23,7 +23,6 @@
 #include "node.h"
 #include "gc.h"
 #include "iostat.h"
-#include "mem_share.h"
 #include <trace/events/f2fs.h>
 
 #define __reverse_ffz(x) __reverse_ffs(~(x))
@@ -2969,7 +2968,8 @@ static void find_first_writable_segment(struct f2fs_sb_info *sbi, struct curseg_
 		return;
 	}
 
-	if (!curseg->cursec->section_ssr) {
+	if (!curseg->cursec || !curseg->cursec->valid_map ||
+	    !curseg->cursec->section_ssr) {
 		return;
 	}
 	
@@ -3000,7 +3000,8 @@ static bool use_seg_from_section_ssr(struct f2fs_sb_info *sbi, struct curseg_inf
 		goto finished;
 	}
 
-	if (!curseg->cursec->section_ssr) {
+	if (!curseg->cursec || !curseg->cursec->valid_map ||
+	    !curseg->cursec->section_ssr) {
 		goto finished;
 	}
 	
@@ -3072,16 +3073,26 @@ static int __next_free_blkoff(struct f2fs_sb_info *sbi,
 static int f2fs_find_next_ssr_block(struct f2fs_sb_info *sbi,
 		struct curseg_info *seg, int segno, int type, unsigned short next_blkoff)
 {
-	if (test_opt(sbi, BLOCK_SSR) && seg->cursec->section_ssr) {
+	if (test_opt(sbi, BLOCK_SSR) && seg->cursec && seg->cursec->valid_map &&
+	    seg->cursec->section_ssr) {
 		int sec = GET_SEC_FROM_SEG(sbi, segno);
 		int first_seg = GET_SEG_FROM_SEC(sbi, sec);
-		unsigned long *start = (unsigned long *)seg->cursec->valid_map + BIT_WORD((segno - first_seg) * BLKS_PER_SEG(sbi));
-		uint64_t ret = __find_rev_next_zero_bit(start, BLKS_PER_SEG(sbi), next_blkoff);
+		size_t words = seg->cursec->valid_map_bytes / sizeof(unsigned long);
+		size_t word_idx;
+		unsigned long *start;
 
-		return ret;
-	} else {
-		return __next_free_blkoff(sbi, segno, next_blkoff);
+		if (!words)
+			return __next_free_blkoff(sbi, segno, next_blkoff);
+
+		word_idx = BIT_WORD((segno - first_seg) * BLKS_PER_SEG(sbi));
+		if (WARN_ON_ONCE(word_idx >= words))
+			return __next_free_blkoff(sbi, segno, next_blkoff);
+
+		start = seg->cursec->valid_map + word_idx;
+		return __find_rev_next_zero_bit(start, BLKS_PER_SEG(sbi), next_blkoff);
 	}
+
+	return __next_free_blkoff(sbi, segno, next_blkoff);
 }
 
 bool f2fs_segment_has_free_slot(struct f2fs_sb_info *sbi, int segno)
@@ -3322,40 +3333,37 @@ static bool need_new_seg(struct f2fs_sb_info *sbi, int type)
 	return false;
 }
 
-static void setup_new_section_ssr(struct f2fs_sb_info *sbi, struct curseg_info *curseg, unsigned int segno,  int type) {
+static void setup_new_section_ssr(struct f2fs_sb_info *sbi, struct curseg_info *curseg, unsigned int segno,  int type)
+{
 	unsigned int secno        = GET_SEC_FROM_SEG(sbi, segno);
 	unsigned int base_segno   = GET_SEG_FROM_SEC(sbi, secno);
 	unsigned int segs_per_sec = SEGS_PER_SEC(sbi);
 	unsigned int idx;
-	int invalids = 0;
-	int non_valids = 0;
-	int inval[4];
-	int tots[16];
+	unsigned char *valid_map;
+	unsigned int max_bits;
 
-	memset(inval, 0, sizeof(inval));
-	memset(tots, 0, sizeof(tots));
-
-	if (!test_opt(sbi, BLOCK_SSR))
+	if (!test_opt(sbi, BLOCK_SSR) || !curseg->cursec ||
+	    !curseg->cursec->valid_map)
 		return;
 
-
-	memset(curseg->cursec->valid_map, 0, sizeof(curseg->cursec->valid_map));
+	valid_map = (unsigned char *)curseg->cursec->valid_map;
+	memset(valid_map, 0, curseg->cursec->valid_map_bytes);
+	max_bits = curseg->cursec->valid_map_bytes * BITS_PER_BYTE;
 
 	for (idx = 0; idx < segs_per_sec; idx++) {
-		unsigned int s          = base_segno + idx;
+		unsigned int s = base_segno + idx;
 		struct seg_entry *se = get_seg_entry(sbi, s);
 		int i;
-				
+
 		for (i = 0; i < BLKS_PER_SEG(sbi); i++) {
 			int offset = BLKS_PER_SEG(sbi) * idx + i;
-			if (f2fs_test_bit(i, se->ckpt_valid_map) || f2fs_test_bit(i, se->cur_valid_map)) {
-				f2fs_set_bit(offset, curseg->cursec->valid_map);
-				non_valids++;
-			} else {
-				invalids++;
-				inval[i%4]++;
-				tots[idx]++;
-			}
+
+			if (WARN_ON_ONCE(offset >= max_bits))
+				return;
+
+			if (f2fs_test_bit(i, se->ckpt_valid_map) ||
+			    f2fs_test_bit(i, se->cur_valid_map))
+				f2fs_set_bit(offset, valid_map);
 		}
 	}
 
@@ -3386,7 +3394,7 @@ void f2fs_allocate_segment_for_resize(struct f2fs_sb_info *sbi, int type,
 				// unsigned int tgt = curseg->next_segno;
 				if (sbi->s_ndevs > 1) {
 					unsigned int new_segno = curseg->next_segno;
-					bool need_to_signal_device = f2fs_target_device_index(sbi, START_BLOCK(sbi, new_segno)) == 1;
+					bool need_to_signal_device = f2fs_target_device_index(sbi, START_BLOCK(sbi, new_segno)) == 1 && f2fs_sb_has_splitftl(sbi);
 
 					setup_new_section_ssr(sbi, curseg, curseg->next_segno, type);
 					if (need_to_signal_device) {
@@ -3867,7 +3875,7 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 						// unsigned int tgt = curseg->next_segno;
 						if (sbi->s_ndevs > 1) {
 							unsigned int new_segno = curseg->next_segno;
-							bool need_to_signal_device = f2fs_target_device_index(sbi, START_BLOCK(sbi, new_segno)) == 1;
+							bool need_to_signal_device = f2fs_target_device_index(sbi, START_BLOCK(sbi, new_segno)) == 1 && f2fs_sb_has_splitftl(sbi);
 
 							setup_new_section_ssr(sbi, curseg, curseg->next_segno, type);
 							if (need_to_signal_device) {
@@ -4943,10 +4951,24 @@ static int build_curseg(struct f2fs_sb_info *sbi)
 			array[i].seg_type = CURSEG_HOT_DATA + i;
 
 			if (test_opt(sbi, BLOCK_SSR)) {
+				size_t map_bits = (size_t)SEGS_PER_SEC(sbi) * BLKS_PER_SEG(sbi);
+				size_t map_bytes = f2fs_bitmap_size(map_bits);
+
 				array[i].cursec = f2fs_kzalloc(sbi, sizeof(struct cursec_info), GFP_KERNEL);
 				if (!array[i].cursec)
-    				return -ENOMEM;
+					return -ENOMEM;
 
+				array[i].cursec->valid_map_bytes = map_bytes;
+				if (map_bytes) {
+					array[i].cursec->valid_map = f2fs_kvzalloc(sbi, map_bytes, GFP_KERNEL);
+					if (!array[i].cursec->valid_map) {
+						kfree(array[i].cursec);
+						array[i].cursec = NULL;
+						return -ENOMEM;
+					}
+				} else {
+					array[i].cursec->valid_map = NULL;
+				}
 				array[i].cursec->section_ssr = false;
 			} else {
 				array[i].cursec = NULL;
@@ -5771,6 +5793,8 @@ static void destroy_curseg(struct f2fs_sb_info *sbi)
 		kfree(array[i].journal);
 
 		if (array[i].cursec) {
+			kvfree(array[i].cursec->valid_map);
+			array[i].cursec->valid_map = NULL;
 			kfree(array[i].cursec);
 			array[i].cursec = NULL;
 		}

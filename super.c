@@ -35,7 +35,6 @@
 #include "xattr.h"
 #include "gc.h"
 #include "iostat.h"
-#include "mem_share.h"
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/f2fs.h>
@@ -4631,50 +4630,6 @@ try_onemore:
 	if (__exist_node_summaries(sbi))
 		sbi->kbytes_written =
 			le64_to_cpu(seg_i->journal->info.kbytes_written);
-
-
-	// warm_node_seg_i = CURSEG_I(sbi, CURSEG_WARM_NODE);
-
-	// if (warm_node_seg_i->cursec) {
-	// 	const u8 *resv = warm_node_seg_i->journal->info.reserved;
-	// 	const size_t stride = 1 + F2FS_SSR_PAYLOAD;
-	// 	const size_t resv_len = EXTRA_INFO_RESERVED;
-
-	// 	for (i = 0; i < SHARING_LOGS/2; i++) {
-	// 		struct curseg_info *cur_seg = CURSEG_I(sbi, i);
-	// 		size_t idx = (size_t)i * stride;
-	// 		if (idx >= resv_len)
-	// 			break; /* out-of-bound guard */
-
-	// 		if (cur_seg->cursec) {
-	// 			/* section_ssr flag (1 byte) */
-	// 			cur_seg->cursec->section_ssr = !!resv[idx];
-
-	// 			if (!cur_seg->cursec->section_ssr)
-	// 				continue;
-
-	// 			memcpy(cur_seg->cursec->valid_map[i], resv+idx+1, F2FS_SSR_PAYLOAD);
-	// 		}
-	// 	}
-
-	// 	resv = cold_node_seg_i->journal->info.reserved;
-	// 	for (i = SHARING_LOGS/2; i < SHARING_LOGS; i++) {
-	// 		struct curseg_info *cur_seg = CURSEG_I(sbi, i);
-	// 		size_t idx = (size_t)i * stride;
-	// 		if (idx >= resv_len)
-	// 			break; /* out-of-bound guard */
-
-	// 		if (cur_seg->cursec) {
-	// 			/* section_ssr flag (1 byte) */
-	// 			cur_seg->cursec->section_ssr = !!resv[idx];
-
-	// 			if (!cur_seg->cursec->section_ssr)
-	// 				continue;
-
-	// 			memcpy(cur_seg->cursec->valid_map[i], resv+idx+1, F2FS_SSR_PAYLOAD);
-	// 		}
-	// 	}
-	// }
 
 
 	f2fs_build_gc_manager(sbi);
