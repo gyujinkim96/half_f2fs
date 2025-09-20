@@ -290,7 +290,9 @@ struct dirty_seglist_info {
 
 struct cursec_info {
 	bool section_ssr;
-	int invalid_cnt;
+	int invalid_cnt[4];
+	int init_cnt[4];
+	int written_cnt[4];
 };
 
 

@@ -4633,18 +4633,23 @@ try_onemore:
 
 
 	if (test_opt(sbi, BLOCK_SSR)) {
+		printk("[SUPER-SETUP] ssr setup from super\n");
 		for (i = 0; i < NR_CURSEG_DATA_TYPE; i++) {
 			u32 invalid_left;
 			bool section_ssr;
 			struct curseg_info *curseg = CURSEG_I(sbi, i + CURSEG_HOT_DATA);
-			size_t off = i * (sizeof(invalid_left) + sizeof(bool));
+			size_t start = i * (4 * sizeof(invalid_left) + sizeof(bool));
+			int j;
 
-			memcpy(&invalid_left, seg_i->journal->info.reserved + off, sizeof(__le32));
-			invalid_left = le32_to_cpu((__le32)invalid_left);
-			section_ssr = seg_i->journal->info.reserved[off + sizeof(__le32)] != 0;
 
-			curseg->cursec->section_ssr = section_ssr;
-			curseg->cursec->invalid_cnt = invalid_left;
+			curseg->cursec->section_ssr = seg_i->journal->info.reserved[start] != 0;
+
+			for (j = 0; j < 4; j++) {
+				size_t off = j * sizeof(invalid_left) + sizeof(bool);
+
+				memcpy(&invalid_left, seg_i->journal->info.reserved + start + off, sizeof(invalid_left));
+				curseg->cursec->invalid_cnt[j] = le32_to_cpu((__le32)invalid_left);
+			}
 		}
 	}
 

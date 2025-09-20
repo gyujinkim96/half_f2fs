@@ -2959,6 +2959,22 @@ static void change_curseg(struct f2fs_sb_info *sbi, int type);
 static int __next_free_blkoff(struct f2fs_sb_info *sbi,
 					int segno, block_t start);
 
+static int find_next_blk_ssr(struct f2fs_sb_info *sbi, struct curseg_info *curseg, int segno, int type, int next_blk) {
+	next_blk = __next_free_blkoff(sbi, segno, next_blk);
+
+	if (test_opt(sbi, BLOCK_SSR)) {
+		while (next_blk < f2fs_usable_blks_in_seg(sbi, segno)) {
+			if (curseg->cursec->invalid_cnt[next_blk%4] > 0)
+				break;
+
+			next_blk = __next_free_blkoff(sbi, segno, next_blk+1);
+		}
+	}
+
+	return next_blk;
+}
+
+
 static void find_first_writable_segment(struct f2fs_sb_info *sbi, struct curseg_info *curseg, int type) {
 	unsigned int cur_sec = GET_SEC_FROM_SEG(sbi, curseg->next_segno);
 	unsigned int end     = GET_SEG_FROM_SEC(sbi, cur_sec + 1);
@@ -2974,7 +2990,7 @@ static void find_first_writable_segment(struct f2fs_sb_info *sbi, struct curseg_
 	
 	/* 같은 섹션 내부에서만 스캔 */
 	while (next < end) {
-		if (__next_free_blkoff(sbi, next, 0) < f2fs_usable_blks_in_seg(sbi, next)) {
+		if (find_next_blk_ssr(sbi, curseg, next, type, 0) < f2fs_usable_blks_in_seg(sbi, next)) {
 			curseg->next_segno = next;
 			break;
 		}
@@ -2994,6 +3010,8 @@ static bool use_seg_from_section_ssr(struct f2fs_sb_info *sbi, struct curseg_inf
 	unsigned int end     = GET_SEG_FROM_SEC(sbi, cur_sec + 1);
 	unsigned int next    = curseg->segno + 1;
 	bool advanced = false;
+	int i;
+	bool valid_found = false;
 
 	if (!test_opt(sbi, BLOCK_SSR)) {
 		goto finished;
@@ -3003,13 +3021,20 @@ static bool use_seg_from_section_ssr(struct f2fs_sb_info *sbi, struct curseg_inf
 		goto finished;
 	}
 
-	if (curseg->cursec->invalid_cnt == 0) {
+	for (i = 0; i < 4; i++) {
+		if (curseg->cursec->invalid_cnt[i] > 0) {
+			valid_found = true;
+			break;
+		}
+	}
+
+	if (!valid_found) {
 		goto finished;
 	}
 	
 	/* 같은 섹션 내부에서만 스캔 */
 	while (next < end) {
-		if (__next_free_blkoff(sbi, next, 0) < f2fs_usable_blks_in_seg(sbi, next)) {
+		if (find_next_blk_ssr(sbi, curseg, next, type, 0) < f2fs_usable_blks_in_seg(sbi, next)) {
 			curseg->next_segno = next;
 			advanced = true;
 			break;
@@ -3035,8 +3060,11 @@ static int new_curseg(struct f2fs_sb_info *sbi, int type, bool new_sec)
 {
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
 	unsigned int segno = curseg->segno;
+	unsigned int old_segno;
+	unsigned int new_segno;
 	bool pinning = type == CURSEG_COLD_DATA_PINNED;
 
+	old_segno = segno;
 	if (curseg->inited)
 		write_sum_page(sbi, curseg->sum_blk, GET_SUM_BLOCK(sbi, segno));
 
@@ -3049,12 +3077,18 @@ static int new_curseg(struct f2fs_sb_info *sbi, int type, bool new_sec)
 	}
 
 	curseg->next_segno = segno;
+	new_segno = segno;
 
 	reset_curseg(sbi, type, 1);
 	curseg->alloc_type = LFS;
 	if (F2FS_OPTION(sbi).fs_mode == FS_MODE_FRAGMENT_BLK)
 		curseg->fragment_remained_chunk =
 				get_random_u32_inclusive(1, sbi->max_fragment_chunk);
+
+	printk("[NEW-CURSEG] type:%d.  %d (%d) => %d (%d)\n", 
+		type, old_segno, GET_SEC_FROM_SEG(sbi, old_segno),
+		new_segno, GET_SEC_FROM_SEG(sbi, new_segno)
+	);
 	return 0;
 }
 
@@ -3086,6 +3120,8 @@ bool f2fs_section_has_free_slot(struct f2fs_sb_info *sbi, int segno)
 	unsigned int end    = GET_SEG_FROM_SEC(sbi, secno + 1);
 	unsigned int s;
 
+	//todo fix this? this functino has no curseg though
+
 	/* Scan every segment within the section; if any segment has a free slot,
 	 * the section is considered writeable for SSR.
 	 */
@@ -3108,7 +3144,8 @@ static void change_curseg(struct f2fs_sb_info *sbi, int type)
 	unsigned int new_segno = curseg->next_segno;
 	struct f2fs_summary_block *sum_node;
 	struct page *sum_page;
-	
+	unsigned int old_segno = curseg->segno;
+
 	write_sum_page(sbi, curseg->sum_blk, GET_SUM_BLOCK(sbi, curseg->segno));
 
 	__set_test_and_inuse(sbi, new_segno);
@@ -3120,7 +3157,7 @@ static void change_curseg(struct f2fs_sb_info *sbi, int type)
 
 	reset_curseg(sbi, type, 1);
 	curseg->alloc_type = SSR;
-	curseg->next_blkoff = __next_free_blkoff(sbi, curseg->segno, 0);
+	curseg->next_blkoff = find_next_blk_ssr(sbi, curseg, curseg->segno, type, 0);
 
 	sum_page = f2fs_get_sum_page(sbi, new_segno);
 	if (IS_ERR(sum_page)) {
@@ -3131,6 +3168,15 @@ static void change_curseg(struct f2fs_sb_info *sbi, int type)
 	sum_node = (struct f2fs_summary_block *)page_address(sum_page);
 	memcpy(curseg->sum_blk, sum_node, SUM_ENTRY_SIZE);
 	f2fs_put_page(sum_page, 1);
+
+	printk("[CHANGE-CURSEG] type:%d  %d (%d) => %d (%d).  init_cnt=%d %d %d %d  written_cnt=%d %d %d %d\n", 
+		type, old_segno, GET_SEC_FROM_SEG(sbi, old_segno),
+		new_segno, GET_SEC_FROM_SEG(sbi, new_segno),
+		curseg->cursec->init_cnt[0], curseg->cursec->init_cnt[1], 
+		curseg->cursec->init_cnt[2], curseg->cursec->init_cnt[3],
+		curseg->cursec->written_cnt[0], curseg->cursec->written_cnt[1],
+		curseg->cursec->written_cnt[2], curseg->cursec->written_cnt[3]
+	);
 }
 
 static int get_ssr_segment(struct f2fs_sb_info *sbi, int type,
@@ -3319,15 +3365,17 @@ static void setup_new_section_ssr(struct f2fs_sb_info *sbi, struct curseg_info *
 	unsigned int segs_per_sec = SEGS_PER_SEC(sbi);
 	unsigned int idx;
 	int entries = SIT_VBLOCK_MAP_SIZE / sizeof(unsigned long);
-	int total = 0;
+	int total[4];
+	int i;
 
 	if (!test_opt(sbi, BLOCK_SSR) || !curseg->cursec)
 		return;
 
+	memset(total, 0, sizeof(total));
+
 	for (idx = 0; idx < segs_per_sec; idx++) {
 		unsigned int s = base_segno + idx;
 		struct seg_entry *se = get_seg_entry(sbi, s);
-		int i;
 
 		unsigned long *target_map = SIT_I(sbi)->tmp_map;
 		unsigned long *ckpt_map = (unsigned long *)se->ckpt_valid_map;
@@ -3336,12 +3384,28 @@ static void setup_new_section_ssr(struct f2fs_sb_info *sbi, struct curseg_info *
 		for (i = 0; i < entries; i++)
 			target_map[i] = ckpt_map[i] | cur_map[i];
 
-		for (i = 0; i < entries; i++)
-			total += hweight_long(~target_map[i]);
+		for (i = 0; i < BLKS_PER_SEG(sbi); i++) {
+			if (!f2fs_test_bit(i, (char*) target_map))
+				total[i%4]++;
+		}
 	}
 
 	curseg->cursec->section_ssr = true;
-	curseg->cursec->invalid_cnt = total;
+
+	printk("[OLD-SSR] secno %d.  init_cnt=%d %d %d %d  written_cnt=%d %d %d %d\n", 
+		curseg->segno, curseg->cursec->init_cnt[0], curseg->cursec->init_cnt[1], 
+		curseg->cursec->init_cnt[2], curseg->cursec->init_cnt[3],
+		curseg->cursec->written_cnt[0], curseg->cursec->written_cnt[1],
+		curseg->cursec->written_cnt[2], curseg->cursec->written_cnt[3]
+	);
+
+	for (i = 0; i < 4; i++) {
+		curseg->cursec->invalid_cnt[i] = total[i];
+		curseg->cursec->init_cnt[i] = total[i];
+		curseg->cursec->written_cnt[i] = 0;
+	}
+	
+	printk("[SETUP-SSR] secno %d. can write %d\n", secno, total[0]+total[1]+total[2]+total[3]);
 	sbi->ssr_started = true;
 	ssr_started = true;
 }
@@ -3795,12 +3859,13 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 	f2fs_wait_discard_bio(sbi, *new_blkaddr);
 
 	if (test_opt(sbi, BLOCK_SSR) && curseg->cursec && curseg->cursec->section_ssr) {
-		curseg->cursec->invalid_cnt--;
+		curseg->cursec->invalid_cnt[curseg->next_blkoff % 4]--;
+		curseg->cursec->written_cnt[curseg->next_blkoff % 4]++;
 	}
 
 	curseg->sum_blk->entries[curseg->next_blkoff] = *sum;
 	if (curseg->alloc_type == SSR) {
-		curseg->next_blkoff = __next_free_blkoff(sbi, curseg->segno, curseg->next_blkoff+1);
+		curseg->next_blkoff = find_next_blk_ssr(sbi, curseg, curseg->segno, type, curseg->next_blkoff+1);
 	} else {
 		curseg->next_blkoff++;
 		if (F2FS_OPTION(sbi).fs_mode == FS_MODE_FRAGMENT_BLK)
@@ -3810,9 +3875,18 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 	if (curseg->next_blkoff >= f2fs_usable_blks_in_seg(sbi, curseg->segno))
 		segment_full = true;
 
-	if (test_opt(sbi, BLOCK_SSR) && curseg->cursec && curseg->cursec->section_ssr &&
-			curseg->cursec->invalid_cnt == 0) {
-		segment_full = true;
+	if (test_opt(sbi, BLOCK_SSR) && curseg->cursec && curseg->cursec->section_ssr) {
+		int i;
+		bool has_invalid_left = false;
+		for (i = 0; i < 4; i++) {
+			if (curseg->cursec->invalid_cnt[i] > 0) {
+				has_invalid_left = true;
+				break;
+			}
+		}
+
+		if (!has_invalid_left)
+			segment_full = true;
 	}
 	
 	stat_inc_block_count(sbi, curseg);
@@ -4934,11 +5008,17 @@ static int build_curseg(struct f2fs_sb_info *sbi)
 			array[i].seg_type = CURSEG_HOT_DATA + i;
 
 			if (test_opt(sbi, BLOCK_SSR)) {
+				int j;
+
 				array[i].cursec = f2fs_kzalloc(sbi, sizeof(struct cursec_info), GFP_KERNEL);
 				if (!array[i].cursec)
 					return -ENOMEM;
 
-				array[i].cursec->invalid_cnt = 0;
+				for (j = 0; j < 4; j++) {
+					array[i].cursec->invalid_cnt[j] = 0;
+					array[i].cursec->init_cnt[j] = 0;
+					array[i].cursec->written_cnt[j] = 0;
+				}
 				array[i].cursec->section_ssr = false;
 			} else {
 				array[i].cursec = NULL;

@@ -917,6 +917,7 @@ retry:
 				 * and newly written blocks.
 				 */
 				if (test_opt(sbi, BLOCK_SSR)) {
+					printk("[ERRORO]: this should not be called\n");
 					if (!f2fs_section_has_free_slot(sbi, segno))
 						goto next;
 				} else {

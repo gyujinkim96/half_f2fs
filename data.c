@@ -4336,9 +4336,65 @@ void f2fs_signal_ssr_start(struct f2fs_sb_info *sbi, struct curseg_info *curseg)
 		for (i = 0; i < entries; i++)
 			target_map[i] = ckpt_map[i] | cur_map[i];
 
-		memcpy(page_address(page) + sizeof(dev1_sec) + SIT_VBLOCK_MAP_SIZE * idx,
-			target_map, SIT_VBLOCK_MAP_SIZE);
+		// memcpy(page_address(page) + sizeof(dev1_sec) + SIT_VBLOCK_MAP_SIZE * idx,
+		// 	target_map, SIT_VBLOCK_MAP_SIZE);
 	}
+
+
+	{
+	unsigned char *legacy_map;
+	unsigned int segs_per_sec;
+	size_t legacy_bytes;
+	struct page *cmp_page;
+
+	cmp_page = alloc_page(GFP_NOFS);
+	if (!cmp_page) {
+		
+		return;
+	}
+
+	legacy_map = page_address(cmp_page);
+
+	memset(legacy_map, 0, 4096);
+
+	/* 원래 타겟 페이지 초기화 */
+
+	segs_per_sec = SEGS_PER_SEC(sbi);
+
+	for (idx = 0; idx < segs_per_sec; idx++) {
+		unsigned int s = base_segno + idx;
+		struct seg_entry *se = get_seg_entry(sbi, s);
+		unsigned char *legacy_seg_map = legacy_map +
+			SIT_VBLOCK_MAP_SIZE * idx;
+
+		target_map = SIT_I(sbi)->tmp_map;
+		ckpt_map = (unsigned long *)se->ckpt_valid_map;
+		cur_map = (unsigned long *)se->cur_valid_map;
+
+		for (i = 0; i < entries; i++)
+			target_map[i] = ckpt_map[i] | cur_map[i];
+
+		for (i = 0; i < BLKS_PER_SEG(sbi); i++) {
+			if (f2fs_test_bit(i, se->ckpt_valid_map) ||
+			    f2fs_test_bit(i, se->cur_valid_map))
+				f2fs_set_bit(i, legacy_seg_map);
+		}
+
+		if (unlikely(memcmp(target_map, legacy_seg_map,
+				    SIT_VBLOCK_MAP_SIZE)))
+			f2fs_err(sbi, "SSR bitmap mismatch segno=%u idx=%d",
+				 s, idx);
+	}
+
+	memcpy(page_address(page) + sizeof(dev1_sec), legacy_map,
+			1024);
+
+free_pages:
+	__free_page(cmp_page);
+	cmp_page = NULL;
+}
+
+
 
 	bio = bio_alloc(bdev, 1, REQ_OP_WRITE | REQ_SYNC, GFP_NOFS);
 	if (!bio) {

@@ -1567,16 +1567,22 @@ static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 			bool section_ssr = false;
 			struct curseg_info *curseg = CURSEG_I(sbi, i + CURSEG_HOT_DATA);
 			__le32 v;
+			int j;
+			size_t start = i * (4 * sizeof(v) + sizeof(bool));
 
-			if (curseg->cursec && curseg->cursec->section_ssr) {
-				invalid_left = curseg->cursec->invalid_cnt;
-				section_ssr = true;
+			section_ssr = curseg->cursec->section_ssr;
+			seg_i->journal->info.reserved[start] = section_ssr ? 1 : 0;
+
+			for (j = 0; j < 4; j++) {
+				invalid_left = 0;
+				if (curseg->cursec && curseg->cursec->section_ssr) {
+					invalid_left = curseg->cursec->invalid_cnt[j];
+				}
+
+				v = cpu_to_le32((u32)invalid_left);
+				size_t off = j * sizeof(v) + sizeof(bool);
+				memcpy(seg_i->journal->info.reserved + start + off, &v, sizeof(v));
 			}
-
-			v = cpu_to_le32((u32)invalid_left);
-			size_t off = i * (sizeof(v) + sizeof(bool));
-			memcpy(seg_i->journal->info.reserved + off, &v, sizeof(v)); 
-			seg_i->journal->info.reserved[off+sizeof(v)] = section_ssr ? 1 : 0;
 		}
 	}
 
