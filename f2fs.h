@@ -1866,6 +1866,13 @@ void f2fs_printk(struct f2fs_sb_info *sbi, bool limit_rate, const char *fmt, ...
 #define f2fs_debug(sbi, fmt, ...)					\
 	f2fs_printk(sbi, false, KERN_DEBUG fmt, ##__VA_ARGS__)
 
+#ifdef F2FS_CUSTOM_DEBUG
+#define f2fs_cdbg(sbi, fmt, ...)					\
+	f2fs_printk(sbi, false, KERN_DEBUG fmt, ##__VA_ARGS__)
+#else
+#define f2fs_cdbg(sbi, fmt, ...) no_printk(fmt, ##__VA_ARGS__)
+#endif
+
 #define f2fs_err_ratelimited(sbi, fmt, ...)				\
 	f2fs_printk(sbi, true, KERN_ERR fmt, ##__VA_ARGS__)
 #define f2fs_warn_ratelimited(sbi, fmt, ...)				\

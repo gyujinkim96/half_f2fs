@@ -3085,10 +3085,9 @@ static int new_curseg(struct f2fs_sb_info *sbi, int type, bool new_sec)
 		curseg->fragment_remained_chunk =
 				get_random_u32_inclusive(1, sbi->max_fragment_chunk);
 
-	printk("[NEW-CURSEG] type:%d.  %d (%d) => %d (%d)\n", 
+	f2fs_cdbg(sbi, "[NEW-CURSEG] type:%d.  %d (%d) => %d (%d)\n",
 		type, old_segno, GET_SEC_FROM_SEG(sbi, old_segno),
-		new_segno, GET_SEC_FROM_SEG(sbi, new_segno)
-	);
+		new_segno, GET_SEC_FROM_SEG(sbi, new_segno));
 	return 0;
 }
 
@@ -3169,7 +3168,7 @@ static void change_curseg(struct f2fs_sb_info *sbi, int type)
 	memcpy(curseg->sum_blk, sum_node, SUM_ENTRY_SIZE);
 	f2fs_put_page(sum_page, 1);
 
-	printk("[CHANGE-CURSEG] type:%d  %d (%d) => %d (%d).  init_cnt=%d %d %d %d  written_cnt=%d %d %d %d\n", 
+	f2fs_cdbg(sbi, "[CHANGE-CURSEG] type:%d  %d (%d) => %d (%d).  init_cnt=%d %d %d %d  written_cnt=%d %d %d %d\n", 
 		type, old_segno, GET_SEC_FROM_SEG(sbi, old_segno),
 		new_segno, GET_SEC_FROM_SEG(sbi, new_segno),
 		curseg->cursec->init_cnt[0], curseg->cursec->init_cnt[1], 
@@ -3392,7 +3391,7 @@ static void setup_new_section_ssr(struct f2fs_sb_info *sbi, struct curseg_info *
 
 	curseg->cursec->section_ssr = true;
 
-	printk("[OLD-SSR] secno %d.  init_cnt=%d %d %d %d  written_cnt=%d %d %d %d\n", 
+	f2fs_cdbg(sbi, "[OLD-SSR] secno %d.  init_cnt=%d %d %d %d  written_cnt=%d %d %d %d\n", 
 		curseg->segno, curseg->cursec->init_cnt[0], curseg->cursec->init_cnt[1], 
 		curseg->cursec->init_cnt[2], curseg->cursec->init_cnt[3],
 		curseg->cursec->written_cnt[0], curseg->cursec->written_cnt[1],
@@ -3405,7 +3404,7 @@ static void setup_new_section_ssr(struct f2fs_sb_info *sbi, struct curseg_info *
 		curseg->cursec->written_cnt[i] = 0;
 	}
 	
-	printk("[SETUP-SSR] secno %d. can write %d\n", secno, total[0]+total[1]+total[2]+total[3]);
+	f2fs_cdbg(sbi, "[SETUP-SSR] secno %d. can write %d\n", secno, total[0]+total[1]+total[2]+total[3]);
 	sbi->ssr_started = true;
 	ssr_started = true;
 }
@@ -3861,6 +3860,10 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 	if (test_opt(sbi, BLOCK_SSR) && curseg->cursec && curseg->cursec->section_ssr) {
 		curseg->cursec->invalid_cnt[curseg->next_blkoff % 4]--;
 		curseg->cursec->written_cnt[curseg->next_blkoff % 4]++;
+
+		if (curseg->cursec->invalid_cnt[curseg->next_blkoff % 4] < 0) {
+			printk("[BAD-SSR] writing over limit!! seg %d (%d)\n", curseg->segno, GET_SEC_FROM_SEG(sbi, curseg->segno));
+		}
 	}
 
 	curseg->sum_blk->entries[curseg->next_blkoff] = *sum;

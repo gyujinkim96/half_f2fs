@@ -4633,7 +4633,7 @@ try_onemore:
 
 
 	if (test_opt(sbi, BLOCK_SSR)) {
-		printk("[SUPER-SETUP] ssr setup from super\n");
+		f2fs_cdbg(sbi, "[SUPER-SETUP] ssr setup from super\n");
 		for (i = 0; i < NR_CURSEG_DATA_TYPE; i++) {
 			u32 invalid_left;
 			bool section_ssr;

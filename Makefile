@@ -2,6 +2,8 @@
 KDIR ?= /lib/modules/$(shell uname -r)/build
 PWD := $(shell pwd)
 
+# ccflags-y += -DF2FS_CUSTOM_DEBUG
+
 obj-m += f2fs.o
 
 f2fs-y := dir.o file.o inode.o namei.o hash.o super.o inline.o \
