@@ -293,6 +293,10 @@ struct cursec_info {
 	int invalid_cnt[4];
 	int init_cnt[4];
 	int written_cnt[4];
+
+	unsigned long *tmp_map;	
+
+	unsigned long *debug_map;	
 };
 
 
@@ -447,6 +451,7 @@ static inline void __set_free(struct f2fs_sb_info *sbi, unsigned int segno)
 	spin_lock(&free_i->segmap_lock);
 	clear_bit(segno, free_i->free_segmap);
 	free_i->free_segments++;
+	f2fs_cdbg(sbi, "[FREE-SEG] being freed %d (%d) called %s\n", segno, secno, __func__);
 
 	next = find_next_bit(free_i->free_segmap,
 			start_segno + SEGS_PER_SEC(sbi), start_segno);
@@ -465,6 +470,9 @@ static inline void __set_inuse(struct f2fs_sb_info *sbi,
 
 	set_bit(segno, free_i->free_segmap);
 	free_i->free_segments--;
+
+	f2fs_cdbg(sbi, "[SET-SEG] being set %d (%d) called %s\n", segno, secno, __func__);
+
 	if (!test_and_set_bit(secno, free_i->free_secmap))
 		free_i->free_sections--;
 }
@@ -481,7 +489,7 @@ static inline void __set_test_and_free(struct f2fs_sb_info *sbi,
 	spin_lock(&free_i->segmap_lock);
 	if (test_and_clear_bit(segno, free_i->free_segmap)) {
 		free_i->free_segments++;
-
+		f2fs_cdbg(sbi, "[FREE-SEG] being freed %d (%d) called %s. inmem=%d\n", segno, secno, __func__, inmem);
 		if (!inmem && IS_CURSEC(sbi, secno))
 			goto skip_free;
 		next = find_next_bit(free_i->free_segmap,
@@ -504,6 +512,7 @@ static inline void __set_test_and_inuse(struct f2fs_sb_info *sbi,
 	spin_lock(&free_i->segmap_lock);
 	if (!test_and_set_bit(segno, free_i->free_segmap)) {
 		free_i->free_segments--;
+		f2fs_cdbg(sbi, "[SET-SEG] being set %d (%d) called %s\n", segno, secno, __func__);
 		if (!test_and_set_bit(secno, free_i->free_secmap))
 			free_i->free_sections--;
 	}

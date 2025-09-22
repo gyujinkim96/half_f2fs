@@ -882,6 +882,8 @@ void f2fs_dirty_to_prefree(struct f2fs_sb_info *sbi)
 	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
 	unsigned int segno;
 
+	f2fs_cdbg(sbi, "[DIRTY2PREFREE] should be called once\n");
+
 	mutex_lock(&dirty_i->seglist_lock);
 	for_each_set_bit(segno, dirty_i->dirty_segmap[DIRTY], MAIN_SEGS(sbi)) {
 		if (get_valid_blocks(sbi, segno, false))
@@ -3350,10 +3352,16 @@ static bool need_new_seg(struct f2fs_sb_info *sbi, int type)
 		return true;
 	if (curseg->alloc_type == LFS &&
 	    is_next_segment_free(sbi, curseg, type) &&
-	    likely(!is_sbi_flag_set(sbi, SBI_CP_DISABLED)))
+	    likely(!is_sbi_flag_set(sbi, SBI_CP_DISABLED))) {
+		f2fs_cdbg(sbi, "[CHECK-NEW-SEG] type:%d  next seg free\n", type);
 		return true;
-	if (!f2fs_need_SSR(sbi) || !get_ssr_segment(sbi, type, SSR, 0))
+	}
+
+	if (!f2fs_need_SSR(sbi) || !get_ssr_segment(sbi, type, SSR, 0)) {
+		f2fs_cdbg(sbi, "[CHECK-NEW-SEG] type:%d  ssr not possible\n", type);
 		return true;
+	}
+	
 	return false;
 }
 
@@ -3366,26 +3374,30 @@ static void setup_new_section_ssr(struct f2fs_sb_info *sbi, struct curseg_info *
 	int entries = SIT_VBLOCK_MAP_SIZE / sizeof(unsigned long);
 	int total[4];
 	int i;
+	unsigned long *target_map;
 
 	if (!test_opt(sbi, BLOCK_SSR) || !curseg->cursec)
 		return;
+
+	target_map = curseg->cursec->debug_map;
 
 	memset(total, 0, sizeof(total));
 
 	for (idx = 0; idx < segs_per_sec; idx++) {
 		unsigned int s = base_segno + idx;
 		struct seg_entry *se = get_seg_entry(sbi, s);
-
-		unsigned long *target_map = SIT_I(sbi)->tmp_map;
 		unsigned long *ckpt_map = (unsigned long *)se->ckpt_valid_map;
 		unsigned long *cur_map = (unsigned long *)se->cur_valid_map;
 
 		for (i = 0; i < entries; i++)
-			target_map[i] = ckpt_map[i] | cur_map[i];
+			target_map[i + idx * entries] = ckpt_map[i] | cur_map[i];
+	}
 
+	for (idx = 0; idx < segs_per_sec; idx++) {
 		for (i = 0; i < BLKS_PER_SEG(sbi); i++) {
-			if (!f2fs_test_bit(i, (char*) target_map))
-				total[i%4]++;
+			unsigned int cur_idx = i + idx * BLKS_PER_SEG(sbi);
+			if (!f2fs_test_bit(cur_idx, (char*) target_map))
+				total[cur_idx%4]++;
 		}
 	}
 
@@ -3858,6 +3870,11 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 	f2fs_wait_discard_bio(sbi, *new_blkaddr);
 
 	if (test_opt(sbi, BLOCK_SSR) && curseg->cursec && curseg->cursec->section_ssr) {
+		unsigned int secno = GET_SEC_FROM_SEG(sbi, curseg->segno);
+		unsigned int first_segno = GET_SEG_FROM_SEC(sbi, secno);
+		unsigned int seg_idx = curseg->segno - first_segno;
+		unsigned int cur_blk;
+
 		curseg->cursec->invalid_cnt[curseg->next_blkoff % 4]--;
 		curseg->cursec->written_cnt[curseg->next_blkoff % 4]++;
 
@@ -3888,8 +3905,13 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 			}
 		}
 
-		if (!has_invalid_left)
+		if (!has_invalid_left) {
 			segment_full = true;
+			
+			f2fs_cdbg(sbi, "[SECTION-SSR-FULL] type:%d  %d (%d)\n", 
+				type, curseg->segno, GET_SEC_FROM_SEG(sbi, curseg->segno)
+			);
+		}
 	}
 	
 	stat_inc_block_count(sbi, curseg);
@@ -3926,8 +3948,10 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 						AT_SSR, se->mtime);
 		} else {
 			if (!use_seg_from_section_ssr(sbi, curseg, type)) {
-				if (need_new_seg(sbi, type))
-					new_curseg(sbi, type, false);
+				if (need_new_seg(sbi, type)) {
+					bool need_new_section = test_opt(sbi, BLOCK_SSR) && curseg->alloc_type == SSR;
+					new_curseg(sbi, type, need_new_section);
+				}
 				else {
 					if (test_opt(sbi, BLOCK_SSR)) {
 						/* SSR 대상 segno가 dev1 영역인지 명확히 검사 후에만
@@ -5023,6 +5047,20 @@ static int build_curseg(struct f2fs_sb_info *sbi)
 					array[i].cursec->written_cnt[j] = 0;
 				}
 				array[i].cursec->section_ssr = false;
+
+				
+				array[i].cursec->tmp_map = f2fs_kzalloc(sbi, SIT_VBLOCK_MAP_SIZE, GFP_KERNEL);
+				if (!array[i].cursec->tmp_map) {
+					kfree(array[i].cursec);
+					return -ENOMEM;
+				}
+
+				array[i].cursec->debug_map = f2fs_kzalloc(sbi, SIT_VBLOCK_MAP_SIZE * SEGS_PER_SEC(sbi), GFP_KERNEL);
+				if (!array[i].cursec->debug_map) {
+					kfree(array[i].cursec->tmp_map);
+					kfree(array[i].cursec);
+					return -ENOMEM;
+				}
 			} else {
 				array[i].cursec = NULL;
 			}
@@ -5846,6 +5884,8 @@ static void destroy_curseg(struct f2fs_sb_info *sbi)
 		kfree(array[i].journal);
 
 		if (array[i].cursec) {
+			kfree(array[i].cursec->tmp_map);
+			kfree(array[i].cursec->debug_map);
 			kfree(array[i].cursec);
 			array[i].cursec = NULL;
 		}

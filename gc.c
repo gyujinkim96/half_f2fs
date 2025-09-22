@@ -1969,6 +1969,9 @@ retry:
 	if (seg_freed == f2fs_usable_segs_in_sec(sbi, segno)) {
 		sec_freed++;
 		total_sec_freed++;
+
+		f2fs_cdbg(sbi, "[F2FS-GC] gced %d (%d)\n",
+			segno, GET_SEC_FROM_SEG(sbi, segno));
 	}
 
 	if (gc_control->one_time)

@@ -4252,6 +4252,11 @@ static inline sector_t f2fs_blk_to_sect(struct f2fs_sb_info *sbi, block_t blk)
 	return (sector_t)blk << (F2FS_BLKSIZE_BITS - 9);
 }
 
+static int signal_count = 0;
+static int last_idx = 0;
+static int last_signal_block[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
+static int last_signal_count[8];
+
 void f2fs_signal_ssr_start(struct f2fs_sb_info *sbi, struct curseg_info *curseg)
 {
 	struct bio *bio;
@@ -4269,6 +4274,10 @@ void f2fs_signal_ssr_start(struct f2fs_sb_info *sbi, struct curseg_info *curseg)
 	unsigned long *ckpt_map;
 	unsigned long *cur_map;
 	int entries = SIT_VBLOCK_MAP_SIZE / sizeof(unsigned long);
+	
+	#ifdef F2FS_CUSTOM_DEBUG
+	unsigned long *debug_map;
+	#endif
 
     /* 기본 방어 */
     if (!sbi || !curseg || sbi->s_ndevs < 2)
@@ -4325,76 +4334,60 @@ void f2fs_signal_ssr_start(struct f2fs_sb_info *sbi, struct curseg_info *curseg)
 
 	memcpy(page_address(page), &dev1_sec, sizeof(dev1_sec));
 
+	{
+		int xi;
+		int prv_found = -1;
+		signal_count++;
+
+		for (xi = 0; xi < 8; xi++) {
+			if (last_signal_block[xi] == dev1_sec) {
+				prv_found = xi;
+				break;
+			}
+		}
+
+		if (prv_found != -1) {
+			printk("[F2FS-SSR-NEAR] ssr happend again to same block (%d) in near time (%d)\n",
+				dev1_sec, signal_count - last_signal_count[prv_found]
+			);
+
+			last_signal_block[prv_found] = dev1_sec;
+			last_signal_count[prv_found] = signal_count;
+		} else {
+			last_signal_block[last_idx] = dev1_sec;
+			last_signal_count[last_idx] = signal_count;
+			last_idx = (last_idx + 1) % 8;
+		}
+	}
+
+
+	#ifdef F2FS_CUSTOM_DEBUG
+	debug_map = curseg->cursec->debug_map;
+	#endif
+
 	for (idx = 0; idx < SEGS_PER_SEC(sbi); idx++) {
 		unsigned int s = base_segno + idx;
 		struct seg_entry *se = get_seg_entry(sbi, s);
 
-		target_map = SIT_I(sbi)->tmp_map;
+		target_map = curseg->cursec->tmp_map;
 		ckpt_map = (unsigned long *)se->ckpt_valid_map;
 		cur_map = (unsigned long *)se->cur_valid_map;
 
 		for (i = 0; i < entries; i++)
 			target_map[i] = ckpt_map[i] | cur_map[i];
 
-		// memcpy(page_address(page) + sizeof(dev1_sec) + SIT_VBLOCK_MAP_SIZE * idx,
-		// 	target_map, SIT_VBLOCK_MAP_SIZE);
-	}
+		memcpy(page_address(page) + sizeof(dev1_sec) + SIT_VBLOCK_MAP_SIZE * idx,
+			target_map, SIT_VBLOCK_MAP_SIZE);
 
-
-	{
-	unsigned char *legacy_map;
-	unsigned int segs_per_sec;
-	size_t legacy_bytes;
-	struct page *cmp_page;
-
-	cmp_page = alloc_page(GFP_NOFS);
-	if (!cmp_page) {
-		
-		return;
-	}
-
-	legacy_map = page_address(cmp_page);
-
-	memset(legacy_map, 0, 4096);
-
-	/* 원래 타겟 페이지 초기화 */
-
-	segs_per_sec = SEGS_PER_SEC(sbi);
-
-	for (idx = 0; idx < segs_per_sec; idx++) {
-		unsigned int s = base_segno + idx;
-		struct seg_entry *se = get_seg_entry(sbi, s);
-		unsigned char *legacy_seg_map = legacy_map +
-			SIT_VBLOCK_MAP_SIZE * idx;
-
-		target_map = SIT_I(sbi)->tmp_map;
-		ckpt_map = (unsigned long *)se->ckpt_valid_map;
-		cur_map = (unsigned long *)se->cur_valid_map;
-
-		for (i = 0; i < entries; i++)
-			target_map[i] = ckpt_map[i] | cur_map[i];
-
-		for (i = 0; i < BLKS_PER_SEG(sbi); i++) {
-			if (f2fs_test_bit(i, se->ckpt_valid_map) ||
-			    f2fs_test_bit(i, se->cur_valid_map))
-				f2fs_set_bit(i, legacy_seg_map);
+		#ifdef F2FS_CUSTOM_DEBUG
+		for (i = 0; i < entries; i++) {
+			int cur_idx = idx * entries + i;
+			if (debug_map[cur_idx] != target_map[i]) {
+				printk("[SSR-SETUP-FAIL] there was some change between section ssr setup and signal\n");
+			}
 		}
-
-		if (unlikely(memcmp(target_map, legacy_seg_map,
-				    SIT_VBLOCK_MAP_SIZE)))
-			f2fs_err(sbi, "SSR bitmap mismatch segno=%u idx=%d",
-				 s, idx);
+		#endif
 	}
-
-	memcpy(page_address(page) + sizeof(dev1_sec), legacy_map,
-			1024);
-
-free_pages:
-	__free_page(cmp_page);
-	cmp_page = NULL;
-}
-
-
 
 	bio = bio_alloc(bdev, 1, REQ_OP_WRITE | REQ_SYNC, GFP_NOFS);
 	if (!bio) {
@@ -4417,8 +4410,6 @@ free_pages:
 	if (ret)
 		f2fs_err(sbi, "SSR signal bio failed: %d sector=%llu",
 			 ret, (unsigned long long)ssr_start_sect);
-	// printk("signl_ssr: sent signal bio to dev1 @sect=%llu. seg = %llu (%d)    ssr block = %llu\n",
-	//        (unsiganed long long)ssr_start_sect, ssr_start_sect/8/512, ssr_start_sect/8/512/16, dev1_sec);
 
 	bio_put(bio);
 	__free_page(page);
